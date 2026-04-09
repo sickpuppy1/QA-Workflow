@@ -16,6 +16,7 @@ const DASHBOARD_URL = 'http://localhost:3000';
 const DASHBOARD_AUTH_TOKEN_KEY = 'dashboardAuthToken';
 const RECENT_CAPTURE_WINDOW = 200;
 const DEFAULT_NETWORK_MERGE_WINDOW_MS = 500;
+const DEFAULT_DYNAMIC_BINDING_ENABLED = false;
 
 // L2: Debug logging flag. Set to `true` during local development to enable
 // verbose diagnostic output. Must remain `false` in production — some diagnostic
@@ -41,6 +42,7 @@ const state = {
   networkCalls: {},   // { [tabId]: [{ url, method, status, timestamp }] }
   networkClearCutoffs: {},
   networkMergeWindowMs: DEFAULT_NETWORK_MERGE_WINDOW_MS,
+  dynamicBindingEnabled: DEFAULT_DYNAMIC_BINDING_ENABLED,
   dialogState: { consoleOpen: false, networkOpen: false },
 
   // Playing
@@ -48,6 +50,8 @@ const state = {
   workflowToPlay: null,
   playbackIndex: 0,
   playbackTabId: null,
+  dynamicRuntime: null,
+  dynamicPause: null,
 };
 
 const RECORDING_DB_NAME = "workflow-recorder-db";
@@ -59,6 +63,333 @@ function normalizeNetworkMergeWindowMs(value) {
   const parsed = Number.parseInt(String(value ?? DEFAULT_NETWORK_MERGE_WINDOW_MS), 10);
   if (!Number.isFinite(parsed)) return DEFAULT_NETWORK_MERGE_WINDOW_MS;
   return Math.min(2000, Math.max(100, parsed));
+}
+
+function normalizeDynamicBindingEnabled(value) {
+  return Boolean(value);
+}
+
+function isRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
+}
+
+function clampNumber(value, min, max, fallback) {
+  const parsed = typeof value === "number" ? value : Number.parseFloat(String(value ?? ""));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeDynamicInputs(input) {
+  if (!isRecord(input)) return null;
+
+  const rawVariables = isRecord(input.variables) ? input.variables : {};
+  const rawBindings = Array.isArray(input.bindings) ? input.bindings : [];
+  const variables = {};
+
+  for (const [key, rawVariable] of Object.entries(rawVariables)) {
+    if (!key || !isRecord(rawVariable)) continue;
+    if (rawVariable.kind === "date_range") {
+      const start = typeof rawVariable.start === "string" ? rawVariable.start : "";
+      const end = typeof rawVariable.end === "string" ? rawVariable.end : "";
+      const stepUnit = rawVariable.stepUnit === "week" || rawVariable.stepUnit === "month" ? rawVariable.stepUnit : "day";
+      const output = rawVariable.output === "datetime-local" || rawVariable.output === "text" ? rawVariable.output : "date";
+      const stepValue = Math.max(1, Math.trunc(clampNumber(rawVariable.stepValue, 1, 365, 1)));
+      variables[key] = {
+        kind: "date_range",
+        start,
+        end,
+        stepUnit,
+        stepValue,
+        output,
+      };
+    } else if (rawVariable.kind === "number_sequence") {
+      const start = clampNumber(rawVariable.start, -1e12, 1e12, 0);
+      const step = clampNumber(rawVariable.step, -1e9, 1e9, 1);
+      const decimals = rawVariable.decimals == null ? null : Math.max(0, Math.min(8, Math.trunc(clampNumber(rawVariable.decimals, 0, 8, 0))));
+      const min = rawVariable.min == null ? null : clampNumber(rawVariable.min, -1e12, 1e12, -1e12);
+      const max = rawVariable.max == null ? null : clampNumber(rawVariable.max, -1e12, 1e12, 1e12);
+      variables[key] = {
+        kind: "number_sequence",
+        start,
+        step,
+        decimals,
+        min,
+        max,
+      };
+    }
+  }
+
+  const bindings = rawBindings
+    .map((binding) => {
+      if (!isRecord(binding)) return null;
+      const eventIndex = Math.trunc(clampNumber(binding.eventIndex, 0, 1e6, -1));
+      const variableKey = typeof binding.variableKey === "string" ? binding.variableKey : "";
+      if (eventIndex < 0 || !variableKey) return null;
+      return {
+        eventIndex,
+        variableKey,
+        selector: typeof binding.selector === "string" ? binding.selector : null,
+        mode: "replace",
+      };
+    })
+    .filter((entry) => entry && variables[entry.variableKey]);
+
+  if (Object.keys(variables).length === 0 || bindings.length === 0) return null;
+
+  return {
+    version: 1,
+    variables,
+    bindings,
+  };
+}
+
+function padDatePart(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatDateForOutput(date, output) {
+  const year = date.getFullYear();
+  const month = padDatePart(date.getMonth() + 1);
+  const day = padDatePart(date.getDate());
+  const hour = padDatePart(date.getHours());
+  const minute = padDatePart(date.getMinutes());
+
+  if (output === "datetime-local") {
+    return `${year}-${month}-${day}T${hour}:${minute}`;
+  }
+  if (output === "text") {
+    return `${year}-${month}-${day} ${hour}:${minute}`;
+  }
+  return `${year}-${month}-${day}`;
+}
+
+function addDateByStep(sourceDate, stepUnit, stepValue, loopIndex) {
+  const date = new Date(sourceDate.getTime());
+  const steps = Math.max(0, loopIndex) * Math.max(1, stepValue);
+  if (steps === 0) return date;
+  if (stepUnit === "month") {
+    date.setMonth(date.getMonth() + steps);
+    return date;
+  }
+  const dayDelta = stepUnit === "week" ? steps * 7 : steps;
+  date.setDate(date.getDate() + dayDelta);
+  return date;
+}
+
+function resolveDynamicVariableValue(variable, loopIndex, overrideValue) {
+  if (!variable || typeof variable !== "object") {
+    return { ok: false, reason: "missing_variable", message: "Dynamic variable is missing." };
+  }
+
+  if (variable.kind === "date_range") {
+    const parseDateSafe = (value) => {
+      const date = new Date(String(value ?? ""));
+      return Number.isNaN(date.getTime()) ? null : date;
+    };
+
+    const startDate = parseDateSafe(variable.start);
+    const endDate = parseDateSafe(variable.end);
+    if (!startDate || !endDate) {
+      return { ok: false, reason: "invalid_date_config", message: "Date range has an invalid start or end value." };
+    }
+    if (startDate.getTime() > endDate.getTime()) {
+      return { ok: false, reason: "invalid_date_config", message: "Date range start is after end." };
+    }
+
+    const output = variable.output === "datetime-local" || variable.output === "text" ? variable.output : "date";
+    const stepUnit = variable.stepUnit === "week" || variable.stepUnit === "month" ? variable.stepUnit : "day";
+    const stepValue = Math.max(1, Math.trunc(clampNumber(variable.stepValue, 1, 365, 1)));
+    const shiftedStartDate = addDateByStep(
+      startDate,
+      stepUnit,
+      stepValue,
+      loopIndex
+    );
+    const shiftedEndDate = addDateByStep(
+      endDate,
+      stepUnit,
+      stepValue,
+      loopIndex
+    );
+
+    if (overrideValue != null && String(overrideValue).trim() !== "") {
+      const rawOverride = String(overrideValue).trim();
+      if (output === "text" && rawOverride.includes(" - ")) {
+        const [rawStart, rawEnd] = rawOverride.split(" - ").map((value) => value.trim());
+        const parsedStart = parseDateSafe(rawStart);
+        const parsedEnd = parseDateSafe(rawEnd);
+        if (!parsedStart || !parsedEnd || parsedEnd.getTime() < parsedStart.getTime()) {
+          return { ok: false, reason: "invalid_override", message: "Date-range override is invalid." };
+        }
+        return {
+          ok: true,
+          value: `${formatDateForOutput(parsedStart, "date")} - ${formatDateForOutput(parsedEnd, "date")}`,
+          rangeStart: formatDateForOutput(parsedStart, "date"),
+          rangeEnd: formatDateForOutput(parsedEnd, "date"),
+        };
+      }
+
+      const overrideDate = parseDateSafe(rawOverride);
+      if (!overrideDate) {
+        return { ok: false, reason: "invalid_override", message: "Date override is invalid." };
+      }
+      if (overrideDate.getTime() < startDate.getTime() || overrideDate.getTime() > endDate.getTime()) {
+        return { ok: false, reason: "range_exhausted", message: "Date override falls outside the configured period." };
+      }
+      return { ok: true, value: formatDateForOutput(overrideDate, output) };
+    }
+
+    if (output === "text") {
+      return {
+        ok: true,
+        value: `${formatDateForOutput(shiftedStartDate, "date")} - ${formatDateForOutput(shiftedEndDate, "date")}`,
+        rangeStart: formatDateForOutput(shiftedStartDate, "date"),
+        rangeEnd: formatDateForOutput(shiftedEndDate, "date"),
+      };
+    }
+
+    if (shiftedStartDate.getTime() > endDate.getTime()) {
+      return { ok: false, reason: "range_exhausted", message: "Computed date exceeded configured end date." };
+    }
+
+    return { ok: true, value: formatDateForOutput(shiftedStartDate, output) };
+  }
+
+  if (variable.kind === "number_sequence") {
+    const parseNum = (value) => {
+      const parsed = Number.parseFloat(String(value ?? ""));
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const decimals = variable.decimals == null ? null : Math.max(0, Math.min(8, Math.trunc(clampNumber(variable.decimals, 0, 8, 0))));
+    let resolved = 0;
+    if (overrideValue != null && String(overrideValue).trim() !== "") {
+      const overrideNum = parseNum(overrideValue);
+      if (overrideNum == null) {
+        return { ok: false, reason: "invalid_override", message: "Numeric override is invalid." };
+      }
+      resolved = overrideNum;
+    } else {
+      const start = clampNumber(variable.start, -1e12, 1e12, 0);
+      const step = clampNumber(variable.step, -1e9, 1e9, 1);
+      resolved = start + (step * Math.max(0, loopIndex));
+    }
+
+    if (decimals != null) {
+      resolved = Number(resolved.toFixed(decimals));
+    }
+
+    if (variable.min != null && resolved < variable.min) {
+      return { ok: false, reason: "range_exhausted", message: "Numeric value is below the configured minimum." };
+    }
+    if (variable.max != null && resolved > variable.max) {
+      return { ok: false, reason: "range_exhausted", message: "Numeric value is above the configured maximum." };
+    }
+
+    return { ok: true, value: resolved };
+  }
+
+  return { ok: false, reason: "unsupported_variable", message: "Unsupported dynamic variable kind." };
+}
+
+function buildDynamicRuntime(workflow, workflowQueueIndex, loopIndex) {
+  const dynamicInputs = normalizeDynamicInputs(workflow?.dynamicInputs);
+  if (!dynamicInputs) return null;
+
+  const bindingsByEventIndex = {};
+  dynamicInputs.bindings.forEach((binding) => {
+    if (!bindingsByEventIndex[binding.eventIndex]) {
+      bindingsByEventIndex[binding.eventIndex] = binding;
+    }
+  });
+
+  return {
+    workflowQueueIndex,
+    loopIndex,
+    dynamicInputs,
+    bindingsByEventIndex,
+    overrides: {},
+    resolvedValues: {},
+    errors: {},
+    syntheticDatePickerOpen: false,
+  };
+}
+
+function recomputeDynamicRuntime(runtime) {
+  if (!runtime) return null;
+  runtime.resolvedValues = {};
+  runtime.errors = {};
+  for (const [variableKey, variable] of Object.entries(runtime.dynamicInputs.variables || {})) {
+    const resolved = resolveDynamicVariableValue(variable, runtime.loopIndex, runtime.overrides?.[variableKey]);
+    if (resolved.ok) {
+      runtime.resolvedValues[variableKey] = resolved.value;
+    } else {
+      runtime.errors[variableKey] = {
+        reason: resolved.reason || "unknown",
+        message: resolved.message || "Unable to resolve variable",
+      };
+    }
+  }
+  return runtime;
+}
+
+function dynamicStatePayload() {
+  const runtime = state.dynamicRuntime;
+  if (!runtime) {
+    return {
+      type: "PLAYBACK_DYNAMIC_STATE",
+      active: false,
+      workflowQueueIndex: null,
+      loopIndex: null,
+      values: {},
+      errors: {},
+      overrides: {},
+      dynamicInputs: null,
+      paused: false,
+      pauseIssue: null,
+    };
+  }
+
+  return {
+    type: "PLAYBACK_DYNAMIC_STATE",
+    active: true,
+    workflowQueueIndex: runtime.workflowQueueIndex,
+    loopIndex: runtime.loopIndex,
+    values: runtime.resolvedValues || {},
+    errors: runtime.errors || {},
+    overrides: runtime.overrides || {},
+    dynamicInputs: runtime.dynamicInputs,
+    paused: Boolean(state.dynamicPause),
+    pauseIssue: state.dynamicPause?.issue || null,
+  };
+}
+
+async function broadcastDynamicState() {
+  await broadcastToPopup(dynamicStatePayload());
+}
+
+function clearDynamicPauseWithResult(result = "aborted") {
+  const pause = state.dynamicPause;
+  if (!pause) return;
+  state.dynamicPause = null;
+  try {
+    pause.resolve(result);
+  } catch (_) {}
+}
+
+async function waitForDynamicResume(issue) {
+  clearDynamicPauseWithResult("aborted");
+  let resolver;
+  const waiter = new Promise((resolve) => {
+    resolver = resolve;
+  });
+  state.dynamicPause = { issue, resolve: resolver };
+  await broadcastToPopup({
+    type: "PLAYBACK_DYNAMIC_PAUSED",
+    ...issue,
+  });
+  await broadcastDynamicState();
+  return waiter;
 }
 
 function getNetworkClearCutoff(tabId) {
@@ -583,7 +914,7 @@ function enqueueRecordingMutation(task) {
 
 (async () => {
   try {
-    const stored = await chrome.storage.local.get(["wfMode", "wfEvents", "wfCheckpoints", "wfRecordingSessionId", "wfScreenshotCount", "networkMergeWindowMs"]);
+    const stored = await chrome.storage.local.get(["wfMode", "wfEvents", "wfCheckpoints", "wfRecordingSessionId", "wfScreenshotCount", "networkMergeWindowMs", "dynamicBindingEnabled"]);
     if (stored.wfMode === "recording") {
       state.mode = "recording";
       state.events = stored.wfEvents || [];
@@ -592,6 +923,7 @@ function enqueueRecordingMutation(task) {
       state.screenshotCount = stored.wfScreenshotCount || 0;
     }
     state.networkMergeWindowMs = normalizeNetworkMergeWindowMs(stored.networkMergeWindowMs);
+    state.dynamicBindingEnabled = normalizeDynamicBindingEnabled(stored.dynamicBindingEnabled);
   } catch (_) {}
 
   try {
@@ -644,8 +976,17 @@ function enqueueRecordingMutation(task) {
 try {
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;
-    if (!changes.networkMergeWindowMs) return;
-    state.networkMergeWindowMs = normalizeNetworkMergeWindowMs(changes.networkMergeWindowMs.newValue);
+    if (changes.networkMergeWindowMs) {
+      state.networkMergeWindowMs = normalizeNetworkMergeWindowMs(changes.networkMergeWindowMs.newValue);
+    }
+    if (changes.dynamicBindingEnabled) {
+      state.dynamicBindingEnabled = normalizeDynamicBindingEnabled(changes.dynamicBindingEnabled.newValue);
+      if (!state.dynamicBindingEnabled) {
+        state.dynamicRuntime = null;
+        clearDynamicPauseWithResult("aborted");
+        broadcastDynamicState();
+      }
+    }
   });
 } catch (_) {}
 
@@ -821,19 +1162,69 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       handleStartPlayback(msg.workflows, sendResponse);
       return true;
 
+    case "PLAYBACK_DYNAMIC_UPDATE": {
+      if (!state.dynamicBindingEnabled) {
+        sendResponse({ ok: false, error: "Dynamic bindings are disabled in dashboard settings." });
+        return false;
+      }
+      const runtime = state.dynamicRuntime;
+      if (!runtime) {
+        sendResponse({ ok: false, error: "No dynamic runtime is active." });
+        return false;
+      }
+      if (
+        msg.workflowQueueIndex != null &&
+        Number.parseInt(msg.workflowQueueIndex, 10) !== Number.parseInt(runtime.workflowQueueIndex, 10)
+      ) {
+        sendResponse({ ok: false, error: "Dynamic runtime belongs to a different queued workflow." });
+        return false;
+      }
+      const updates = isRecord(msg.overrides) ? msg.overrides : {};
+      Object.entries(updates).forEach(([variableKey, value]) => {
+        if (runtime.dynamicInputs.variables[variableKey]) {
+          runtime.overrides[variableKey] = value;
+        }
+      });
+      recomputeDynamicRuntime(runtime);
+      broadcastDynamicState();
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    case "PLAYBACK_RESUME":
+      if (!state.dynamicBindingEnabled) {
+        sendResponse({ ok: false, error: "Dynamic bindings are disabled in dashboard settings." });
+        return false;
+      }
+      if (!state.dynamicPause) {
+        sendResponse({ ok: false, error: "Playback is not paused for dynamic input." });
+        return false;
+      }
+      clearDynamicPauseWithResult("resumed");
+      broadcastDynamicState();
+      sendResponse({ ok: true });
+      return false;
+
     case "STOP_PLAYBACK":
       state.mode = "idle";
       state.workflowsToPlay = [];
       state.workflowToPlay = null;
+      state.dynamicRuntime = null;
+      clearDynamicPauseWithResult("aborted");
       chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
         if (tab) chrome.tabs.sendMessage(tab.id, { type: 'PLAYBACK_HUD_HIDE' }).catch(() => {});
       }).catch(() => {});
       broadcastToPopup({ type: "PLAYBACK_STOPPED" });
+      broadcastDynamicState();
       sendResponse({ mode: state.mode, eventCount: state.events.length });
       return false;
 
     case "GET_STATE":
-      sendResponse({ mode: state.mode, eventCount: state.events.length });
+      sendResponse({
+        mode: state.mode,
+        eventCount: state.events.length,
+        dynamicState: dynamicStatePayload(),
+      });
       return false;
 
     case "EXPORT_WORKFLOW":
@@ -1523,15 +1914,21 @@ async function handleStartPlayback(workflows, sendResponse) {
   }
 
   state.mode = "playing";
+  const config = await chrome.storage.local.get(["playBufferSeconds", "dynamicBindingEnabled"]);
+  state.dynamicBindingEnabled = normalizeDynamicBindingEnabled(config.dynamicBindingEnabled);
   state.workflowsToPlay = workflows.map((workflow) => ({
     ...workflow,
     loopCount: getWorkflowLoopCount(workflow),
+    dynamicInputs: state.dynamicBindingEnabled
+      ? normalizeDynamicInputs(workflow?.dynamicInputs)
+      : null,
   }));
   state.playbackIndex = 0;
   state.screenshots = {};
   state.screenshotCount = 0;
+  state.dynamicRuntime = null;
+  clearDynamicPauseWithResult("aborted");
 
-  const config = await chrome.storage.local.get(["playBufferSeconds"]);
   state.playBufferMs = (config.playBufferSeconds !== undefined ? parseInt(config.playBufferSeconds) : 8) * 1000;
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -1560,6 +1957,7 @@ async function handleStartPlayback(workflows, sendResponse) {
   }
 
   sendResponse({ ok: true });
+  broadcastDynamicState();
   runPlaybackQueue();
 }
 
@@ -1584,6 +1982,11 @@ async function runPlaybackQueue() {
         _loopIteration: loopIndex + 1,
         _loopCount: loopCount,
       };
+      state.dynamicRuntime = state.dynamicBindingEnabled
+        ? buildDynamicRuntime(workflow, q, loopIndex)
+        : null;
+      recomputeDynamicRuntime(state.dynamicRuntime);
+      await broadcastDynamicState();
       if (state.mode !== "playing") break;
       const runStatus = await runSinglePlayback();
       // Stop the queue on first failure — subsequent workflows would be meaningless.
@@ -1600,6 +2003,8 @@ async function runPlaybackQueue() {
   
   if (state.mode === "playing") {
     state.mode = "idle";
+    state.dynamicRuntime = null;
+    clearDynamicPauseWithResult("aborted");
     if (!anyFailed) {
       try {
         const [finalTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -1612,6 +2017,7 @@ async function runPlaybackQueue() {
       broadcastToPopup({ type: 'QUEUE_COMPLETE' });
     }
   }
+  broadcastDynamicState();
 }
 
 /**
@@ -1641,9 +2047,106 @@ async function runSinglePlayback() {
     }
 
     const event = events[i];
+    let eventToDispatch = event;
+    if (state.dynamicBindingEnabled && state.dynamicRuntime) {
+      while (state.mode === "playing") {
+        const binding = state.dynamicRuntime.bindingsByEventIndex?.[i];
+        if (!binding) break;
+        const variable = state.dynamicRuntime.dynamicInputs.variables?.[binding.variableKey];
+        if (!variable) {
+          const pauseResult = await waitForDynamicResume({
+            reason: "missing_variable",
+            message: `Dynamic variable "${binding.variableKey}" is missing for event #${i + 1}.`,
+            eventIndex: i,
+            variableKey: binding.variableKey,
+          });
+          if (pauseResult !== "resumed") {
+            runStatus = "aborted";
+          }
+          recomputeDynamicRuntime(state.dynamicRuntime);
+          await broadcastDynamicState();
+          continue;
+        }
+
+        const resolved = resolveDynamicVariableValue(
+          variable,
+          state.dynamicRuntime.loopIndex,
+          state.dynamicRuntime.overrides?.[binding.variableKey]
+        );
+
+        if (!resolved.ok) {
+          const pauseResult = await waitForDynamicResume({
+            reason: resolved.reason || "dynamic_resolution_failed",
+            message: resolved.message || "Could not resolve dynamic value.",
+            eventIndex: i,
+            variableKey: binding.variableKey,
+          });
+          if (pauseResult !== "resumed") {
+            runStatus = "aborted";
+            break;
+          }
+          recomputeDynamicRuntime(state.dynamicRuntime);
+          await broadcastDynamicState();
+          continue;
+        }
+
+        if (event.type === "input" || event.type === "change") {
+          eventToDispatch = {
+            ...event,
+            selector: binding.selector || event.selector || null,
+            value: resolved.value,
+            _dynamicValue: true,
+            _dynamicVariableKey: binding.variableKey,
+          };
+        } else if (event.type === "click" && variable.kind === "date_range") {
+          eventToDispatch = {
+            ...event,
+            type: "input",
+            selector: binding.selector || event.selector || null,
+            value: resolved.value,
+            _dynamicValue: true,
+            _dynamicVariableKey: binding.variableKey,
+            _dynamicFromClick: true,
+            _dynamicOpenDatePickerSequence: true,
+          };
+        } else {
+          eventToDispatch = {
+            ...event,
+            selector: binding.selector || event.selector || null,
+            value: resolved.value,
+            _dynamicValue: true,
+            _dynamicVariableKey: binding.variableKey,
+          };
+        }
+        state.dynamicRuntime.resolvedValues[binding.variableKey] = resolved.value;
+        delete state.dynamicRuntime.errors[binding.variableKey];
+        await broadcastDynamicState();
+        break;
+      }
+
+      if (runStatus === "aborted") {
+        break;
+      }
+    }
     const nextEvent = events[i + 1];
 
-    broadcastToPopup({ type: "PLAYBACK_PROGRESS", index: i, total: events.length, event });
+    if (
+      state.dynamicRuntime?.syntheticDatePickerOpen &&
+      event.type === "click" &&
+      !eventToDispatch?._dynamicFromClick
+    ) {
+      const selector = typeof event.selector === "string" ? event.selector : "";
+      const isDatePickerInternal = /daterangepicker|calendar|applyBtn|cancelBtn|table-condensed/i.test(selector);
+      if (isDatePickerInternal) {
+        if (/applyBtn|cancelBtn/i.test(selector)) {
+          state.dynamicRuntime.syntheticDatePickerOpen = false;
+        }
+        continue;
+      }
+      state.dynamicRuntime.syntheticDatePickerOpen = false;
+    }
+
+    broadcastToPopup({ type: "PLAYBACK_PROGRESS", index: i, total: events.length, event: eventToDispatch });
 
     const label = event.type === "checkpoint"
       ? `Screenshot: ${event.label}`
@@ -1671,7 +2174,7 @@ async function runSinglePlayback() {
 
     let dispatchResult = { ok: true };
     try {
-      dispatchResult = await dispatchPlaybackEvent(event, results, {
+      dispatchResult = await dispatchPlaybackEvent(eventToDispatch, results, {
         label,
         progress: i + 1,
         total: events.length
@@ -1706,6 +2209,10 @@ async function runSinglePlayback() {
       } catch (_) {}
 
       break;
+    }
+
+    if (state.dynamicRuntime && eventToDispatch?._dynamicOpenDatePickerSequence) {
+      state.dynamicRuntime.syntheticDatePickerOpen = true;
     }
 
     if (nextEvent && event.timestamp && nextEvent.timestamp) {
@@ -2339,7 +2846,10 @@ function waitForTabLoad(tabId) {
  */
 function handleStopPlayback(sendResponse) {
   state.mode = "idle";
+  state.dynamicRuntime = null;
+  clearDynamicPauseWithResult("aborted");
   broadcastToPopup({ type: "PLAYBACK_STOPPED" });
+  broadcastDynamicState();
   sendResponse({ ok: true });
 }
 
@@ -2381,7 +2891,10 @@ function resetState() {
   state.networkClearCutoffs = {};
   state.playbackIndex = 0;
   state.playbackTabId = null;
+  state.workflowsToPlay = [];
   state.workflowToPlay = null;
+  state.dynamicRuntime = null;
+  clearDynamicPauseWithResult("aborted");
   state.recordingTabId = null;
   state.workflowName = "";
 }

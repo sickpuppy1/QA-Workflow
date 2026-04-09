@@ -61,6 +61,10 @@ export async function PUT(req: NextRequest) {
         body.networkMergeWindowMs === undefined
           ? undefined
           : parseNetworkMergeWindowMs(body.networkMergeWindowMs),
+      dynamicBindingEnabled:
+        body.dynamicBindingEnabled === undefined
+          ? undefined
+          : Boolean(body.dynamicBindingEnabled),
     })
 
     return NextResponse.json({ settings })

@@ -15,8 +15,42 @@ interface UserSettingsDoc {
   playBufferSeconds: number
   promptScreenshotLabel: boolean
   networkMergeWindowMs: number
+  dynamicBindingEnabled: boolean
   createdAt: Date
   updatedAt: Date
+}
+
+export interface DynamicDateRangeVariable {
+  kind: 'date_range'
+  start: string
+  end: string
+  stepUnit: 'day' | 'week' | 'month'
+  stepValue: number
+  output: 'date' | 'datetime-local' | 'text'
+}
+
+export interface DynamicNumberSequenceVariable {
+  kind: 'number_sequence'
+  start: number
+  step: number
+  decimals: number | null
+  min: number | null
+  max: number | null
+}
+
+export type DynamicVariableDef = DynamicDateRangeVariable | DynamicNumberSequenceVariable
+
+export interface DynamicBinding {
+  eventIndex: number
+  variableKey: string
+  selector: string | null
+  mode: 'replace'
+}
+
+export interface WorkflowDynamicInputs {
+  version: 1
+  variables: Record<string, DynamicVariableDef>
+  bindings: DynamicBinding[]
 }
 
 interface WorkflowDoc {
@@ -25,6 +59,7 @@ interface WorkflowDoc {
   recordedAt: Date
   events: unknown[]
   userId?: string | null
+  dynamicInputs?: WorkflowDynamicInputs | null
 }
 
 interface RecordingScreenshotDoc {
@@ -70,6 +105,7 @@ export interface UserSettingsRecord {
   playBufferSeconds: number
   promptScreenshotLabel: boolean
   networkMergeWindowMs: number
+  dynamicBindingEnabled: boolean
 }
 
 export interface WorkflowSummary {
@@ -110,6 +146,7 @@ export interface WorkflowDetail {
   name: string
   recordedAt: string
   events: unknown[]
+  dynamicInputs: WorkflowDynamicInputs | null
   userId: string | null
   screenshots: RecordingScreenshotRecord[]
   runs: PlaybackRunSummary[]
@@ -140,6 +177,7 @@ export interface RunDetail {
     name: string
     recordedAt: string
     events: unknown[]
+    dynamicInputs: WorkflowDynamicInputs | null
     userId: string | null
     screenshots: RecordingScreenshotRecord[]
   }
@@ -150,6 +188,7 @@ interface CreateWorkflowInput {
   name: string
   recordedAt: Date
   events: unknown[]
+  dynamicInputs?: WorkflowDynamicInputs | null
   screenshots: Array<{
     index: number
     label: string | null
@@ -179,6 +218,7 @@ export const DEFAULT_USER_SETTINGS: UserSettingsRecord = {
   playBufferSeconds: 8,
   promptScreenshotLabel: false,
   networkMergeWindowMs: 500,
+  dynamicBindingEnabled: false,
 }
 
 function iso(value: Date) {
@@ -219,6 +259,76 @@ function mapCheckpoint(doc: PlaybackCheckpointDoc): PlaybackCheckpointRecord {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function toFiniteNumber(value: unknown, fallback: number, min: number, max: number) {
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''))
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(max, Math.max(min, parsed))
+}
+
+export function normalizeWorkflowDynamicInputs(value: unknown): WorkflowDynamicInputs | null {
+  if (!isRecord(value)) return null
+
+  const variablesInput = isRecord(value.variables) ? value.variables : {}
+  const bindingsInput = Array.isArray(value.bindings) ? value.bindings : []
+  const variables: Record<string, DynamicVariableDef> = {}
+
+  Object.entries(variablesInput).forEach(([key, inputVar]) => {
+    if (!key || !isRecord(inputVar)) return
+    if (inputVar.kind === 'date_range') {
+      variables[key] = {
+        kind: 'date_range',
+        start: typeof inputVar.start === 'string' ? inputVar.start : '',
+        end: typeof inputVar.end === 'string' ? inputVar.end : '',
+        stepUnit: inputVar.stepUnit === 'week' || inputVar.stepUnit === 'month' ? inputVar.stepUnit : 'day',
+        stepValue: Math.max(1, Math.trunc(toFiniteNumber(inputVar.stepValue, 1, 1, 365))),
+        output:
+          inputVar.output === 'datetime-local' || inputVar.output === 'text'
+            ? inputVar.output
+            : 'date',
+      }
+    } else if (inputVar.kind === 'number_sequence') {
+      variables[key] = {
+        kind: 'number_sequence',
+        start: toFiniteNumber(inputVar.start, 0, -1e12, 1e12),
+        step: toFiniteNumber(inputVar.step, 1, -1e9, 1e9),
+        decimals:
+          inputVar.decimals == null
+            ? null
+            : Math.max(0, Math.min(8, Math.trunc(toFiniteNumber(inputVar.decimals, 0, 0, 8)))),
+        min: inputVar.min == null ? null : toFiniteNumber(inputVar.min, -1e12, -1e12, 1e12),
+        max: inputVar.max == null ? null : toFiniteNumber(inputVar.max, 1e12, -1e12, 1e12),
+      }
+    }
+  })
+
+  const bindings: DynamicBinding[] = bindingsInput
+    .map((binding): DynamicBinding | null => {
+      if (!isRecord(binding)) return null
+      const variableKey = typeof binding.variableKey === 'string' ? binding.variableKey : ''
+      const eventIndex = Math.max(0, Math.trunc(toFiniteNumber(binding.eventIndex, -1, 0, 1e6)))
+      if (!variableKey || !variables[variableKey] || eventIndex < 0) return null
+      return {
+        eventIndex,
+        variableKey,
+        selector: typeof binding.selector === 'string' ? binding.selector : null,
+        mode: 'replace',
+      }
+    })
+    .filter((binding): binding is DynamicBinding => binding !== null)
+
+  if (Object.keys(variables).length === 0 || bindings.length === 0) return null
+
+  return {
+    version: 1,
+    variables,
+    bindings,
+  }
+}
+
 function normalizePlayBufferSeconds(value: unknown) {
   const parsed =
     typeof value === 'number'
@@ -254,6 +364,7 @@ function mapUserSettings(doc: UserSettingsDoc | null | undefined): UserSettingsR
     playBufferSeconds: normalizePlayBufferSeconds(doc.playBufferSeconds),
     promptScreenshotLabel: Boolean(doc.promptScreenshotLabel),
     networkMergeWindowMs: normalizeNetworkMergeWindowMs(doc.networkMergeWindowMs),
+    dynamicBindingEnabled: Boolean(doc.dynamicBindingEnabled),
   }
 }
 
@@ -350,6 +461,10 @@ export async function upsertUserSettings(
       input.networkMergeWindowMs === undefined
         ? current.networkMergeWindowMs
         : normalizeNetworkMergeWindowMs(input.networkMergeWindowMs),
+    dynamicBindingEnabled:
+      input.dynamicBindingEnabled === undefined
+        ? current.dynamicBindingEnabled
+        : Boolean(input.dynamicBindingEnabled),
   }
   const now = new Date()
 
@@ -360,6 +475,7 @@ export async function upsertUserSettings(
         playBufferSeconds: nextSettings.playBufferSeconds,
         promptScreenshotLabel: nextSettings.promptScreenshotLabel,
         networkMergeWindowMs: nextSettings.networkMergeWindowMs,
+        dynamicBindingEnabled: nextSettings.dynamicBindingEnabled,
         updatedAt: now,
       },
       $setOnInsert: {
@@ -542,6 +658,7 @@ export async function getWorkflowDetail(id: string) {
     name: workflow.name,
     recordedAt: iso(workflow.recordedAt),
     events: Array.isArray(workflow.events) ? workflow.events : [],
+    dynamicInputs: normalizeWorkflowDynamicInputs(workflow.dynamicInputs),
     userId: workflow.userId ?? null,
     screenshots: screenshots.map(mapScreenshot),
     runs: runs.map((run) => mapRun(run, checkpointCounts.get(run._id) ?? 0)),
@@ -565,6 +682,7 @@ export async function getWorkflowDetailForUser(id: string, userId: string) {
     name: workflow.name,
     recordedAt: iso(workflow.recordedAt),
     events: Array.isArray(workflow.events) ? workflow.events : [],
+    dynamicInputs: normalizeWorkflowDynamicInputs(workflow.dynamicInputs),
     userId: workflow.userId ?? null,
     screenshots: screenshots.map(mapScreenshot),
     runs: runs.map((run) => mapRun(run, checkpointCounts.get(run._id) ?? 0)),
@@ -598,6 +716,7 @@ export async function getRunDetail(runId: string) {
       name: workflow.name,
       recordedAt: iso(workflow.recordedAt),
       events: Array.isArray(workflow.events) ? workflow.events : [],
+      dynamicInputs: normalizeWorkflowDynamicInputs(workflow.dynamicInputs),
       userId: workflow.userId ?? null,
       screenshots: screenshots.map(mapScreenshot),
     },
@@ -631,6 +750,7 @@ export async function getRunDetailForUser(runId: string, userId: string) {
       name: workflow.name,
       recordedAt: iso(workflow.recordedAt),
       events: Array.isArray(workflow.events) ? workflow.events : [],
+      dynamicInputs: normalizeWorkflowDynamicInputs(workflow.dynamicInputs),
       userId: workflow.userId ?? null,
       screenshots: screenshots.map(mapScreenshot),
     },
@@ -646,6 +766,7 @@ export async function createWorkflowRecord(input: CreateWorkflowInput) {
     name: input.name,
     recordedAt: input.recordedAt,
     events: Array.isArray(input.events) ? input.events : [],
+    dynamicInputs: normalizeWorkflowDynamicInputs(input.dynamicInputs),
     userId: input.userId,
   }
 
@@ -666,6 +787,24 @@ export async function createWorkflowRecord(input: CreateWorkflowInput) {
   }
 
   return { id: workflowId }
+}
+
+export async function updateWorkflowDynamicInputsForUser(
+  workflowId: string,
+  userId: string,
+  dynamicInputs: WorkflowDynamicInputs | null
+) {
+  const { workflows } = await getCollections()
+  const normalized = normalizeWorkflowDynamicInputs(dynamicInputs)
+  const result = await workflows.updateOne(
+    { _id: workflowId, userId },
+    {
+      $set: {
+        dynamicInputs: normalized,
+      },
+    }
+  )
+  return result.matchedCount > 0
 }
 
 export async function createRunRecord(input: CreateRunInput) {

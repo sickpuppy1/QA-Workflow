@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 // ─── Event type helpers ───────────────────────────────────────────────────────
 
@@ -38,14 +38,377 @@ interface Workflow {
   name: string
   recordedAt: string
   events: any[]
+  dynamicInputs?: DynamicInputs | null
   screenshots: Screenshot[]
   runs: Run[]
 }
 
+type DynamicDateRangeVariable = {
+  kind: 'date_range'
+  start: string
+  end: string
+  stepUnit: 'day' | 'week' | 'month'
+  stepValue: number
+  output: 'date' | 'datetime-local' | 'text'
+}
+
+type DynamicNumberSequenceVariable = {
+  kind: 'number_sequence'
+  start: number
+  step: number
+  decimals: number | null
+  min: number | null
+  max: number | null
+}
+
+type DynamicVariable = DynamicDateRangeVariable | DynamicNumberSequenceVariable
+
+type DynamicBinding = {
+  eventIndex: number
+  variableKey: string
+  selector: string | null
+  mode: 'replace'
+}
+
+type DynamicInputs = {
+  version: 1
+  variables: Record<string, DynamicVariable>
+  bindings: DynamicBinding[]
+}
+
+type DynamicSuggestion = {
+  eventIndex: number
+  selector: string | null
+  kind: 'date_range' | 'number_sequence'
+  inputType: string
+  sourceType: 'click' | 'input' | 'change'
+  rawValue: string
+  numericValue?: number
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number) {
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''))
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(max, Math.max(min, parsed))
+}
+
+function normalizeDynamicInputs(input: unknown): DynamicInputs {
+  if (!isRecord(input)) {
+    return { version: 1, variables: {}, bindings: [] }
+  }
+  const rawVariables = isRecord(input.variables) ? input.variables : {}
+  const rawBindings = Array.isArray(input.bindings) ? input.bindings : []
+  const variables: Record<string, DynamicVariable> = {}
+
+  Object.entries(rawVariables).forEach(([key, variable]) => {
+    if (!key || !isRecord(variable)) return
+    if (variable.kind === 'date_range') {
+      variables[key] = {
+        kind: 'date_range',
+        start: typeof variable.start === 'string' ? variable.start : '',
+        end: typeof variable.end === 'string' ? variable.end : '',
+        stepUnit: variable.stepUnit === 'week' || variable.stepUnit === 'month' ? variable.stepUnit : 'day',
+        stepValue: Math.max(1, Math.trunc(clampNumber(variable.stepValue, 1, 365, 1))),
+        output: variable.output === 'datetime-local' || variable.output === 'text' ? variable.output : 'date',
+      }
+    } else if (variable.kind === 'number_sequence') {
+      variables[key] = {
+        kind: 'number_sequence',
+        start: clampNumber(variable.start, -1e12, 1e12, 0),
+        step: clampNumber(variable.step, -1e9, 1e9, 1),
+        decimals:
+          variable.decimals == null
+            ? null
+            : Math.max(0, Math.min(8, Math.trunc(clampNumber(variable.decimals, 0, 8, 0)))),
+        min: variable.min == null ? null : clampNumber(variable.min, -1e12, 1e12, -1e12),
+        max: variable.max == null ? null : clampNumber(variable.max, -1e12, 1e12, 1e12),
+      }
+    }
+  })
+
+  const bindings = rawBindings
+    .map((binding): DynamicBinding | null => {
+      if (!isRecord(binding)) return null
+      const variableKey = typeof binding.variableKey === 'string' ? binding.variableKey : ''
+      const eventIndex = Math.max(0, Math.trunc(clampNumber(binding.eventIndex, 0, 1e6, -1)))
+      if (!variableKey || eventIndex < 0 || !variables[variableKey]) return null
+      return {
+        eventIndex,
+        variableKey,
+        selector: typeof binding.selector === 'string' ? binding.selector : null,
+        mode: 'replace',
+      }
+    })
+    .filter((binding): binding is DynamicBinding => binding !== null)
+
+  return {
+    version: 1,
+    variables,
+    bindings,
+  }
+}
+
+function detectDynamicSuggestions(events: any[]): DynamicSuggestion[] {
+  if (!Array.isArray(events)) return []
+  const out: DynamicSuggestion[] = []
+  const datePattern = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?)?$/
+
+  events.forEach((event, eventIndex) => {
+    if (!event) return
+    const selector = typeof event.selector === 'string' ? event.selector : null
+    const inputType = String(event.inputType || '').toLowerCase()
+    const tagName = String(event.tagName || '').toLowerCase()
+
+    if (event.type === 'click') {
+      const hintText = `${selector || ''} ${event.placeholder || ''} ${event.label || ''}`.toLowerCase()
+      const looksDateField =
+        (tagName === 'input' || tagName === 'textarea') &&
+        /date|selecteddate|range/.test(hintText) &&
+        !/daterangepicker|calendar|applybtn|cancelbtn/.test(hintText)
+      if (looksDateField) {
+        const now = new Date()
+        const year = now.getFullYear()
+        const month = String(now.getMonth() + 1).padStart(2, '0')
+        const day = String(now.getDate()).padStart(2, '0')
+        out.push({
+          eventIndex,
+          selector,
+          kind: 'date_range',
+          inputType: 'date-range-click',
+          sourceType: 'click',
+          rawValue: `${year}-${month}-${day}`,
+        })
+      }
+      return
+    }
+
+    if (event.type !== 'input' && event.type !== 'change') return
+    const rawValue = event.value
+    if (typeof rawValue === 'boolean' || rawValue == null) return
+    const valueText = String(rawValue).trim()
+    if (!valueText) return
+
+    const looksDate =
+      inputType === 'date' ||
+      inputType === 'datetime-local' ||
+      datePattern.test(valueText)
+    if (looksDate) {
+      out.push({
+        eventIndex,
+        selector,
+        kind: 'date_range',
+        inputType,
+        sourceType: event.type,
+        rawValue: valueText,
+      })
+      return
+    }
+
+    const numeric = Number.parseFloat(valueText)
+    const looksNumber =
+      inputType === 'number' ||
+      /^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(valueText) ||
+      Number.isFinite(numeric)
+    if (looksNumber && Number.isFinite(numeric)) {
+      out.push({
+        eventIndex,
+        selector,
+        kind: 'number_sequence',
+        inputType,
+        sourceType: event.type,
+        rawValue: valueText,
+        numericValue: numeric,
+      })
+    }
+  })
+
+  return out
+}
+
 /** Single-workflow studio view: checkpoints, runs, and screenshot lightbox. */
-export default function WorkflowDetailClient({ workflow }: { workflow: Workflow }) {
+export default function WorkflowDetailClient({
+  workflow,
+  dynamicBindingEnabled,
+}: {
+  workflow: Workflow
+  dynamicBindingEnabled: boolean
+}) {
   const router = useRouter()
   const [selectedImg, setSelectedImg] = useState<Screenshot | null>(null)
+  const [dynamicDraft, setDynamicDraft] = useState<DynamicInputs>(() =>
+    normalizeDynamicInputs(workflow.dynamicInputs)
+  )
+  const [dynamicSaveState, setDynamicSaveState] = useState<{ kind: 'idle' | 'saving' | 'success' | 'error'; message: string }>({
+    kind: 'idle',
+    message: '',
+  })
+
+  useEffect(() => {
+    setDynamicDraft(normalizeDynamicInputs(workflow.dynamicInputs))
+    setDynamicSaveState({ kind: 'idle', message: '' })
+  }, [workflow.id, workflow.dynamicInputs])
+
+  const dynamicSuggestions = useMemo(
+    () => detectDynamicSuggestions(workflow.events || []),
+    [workflow.events]
+  )
+  const boundEventIndexes = useMemo(
+    () => new Set(dynamicDraft.bindings.map((binding) => binding.eventIndex)),
+    [dynamicDraft.bindings]
+  )
+
+  function cloneDraft(prev: DynamicInputs): DynamicInputs {
+    return {
+      version: 1,
+      variables: { ...prev.variables },
+      bindings: prev.bindings.map((binding) => ({ ...binding })),
+    }
+  }
+
+  function uniqueVariableKey(prefix: string, draft: DynamicInputs) {
+    let idx = 1
+    let key = `${prefix}_${idx}`
+    while (draft.variables[key]) {
+      idx += 1
+      key = `${prefix}_${idx}`
+    }
+    return key
+  }
+
+  function toDateInputValue(source: string) {
+    const parsed = new Date(source)
+    if (Number.isNaN(parsed.getTime())) return ''
+    const y = parsed.getFullYear()
+    const m = String(parsed.getMonth() + 1).padStart(2, '0')
+    const d = String(parsed.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }
+
+  function addDaysIso(source: string, days: number) {
+    const parsed = new Date(source)
+    if (Number.isNaN(parsed.getTime())) return source
+    parsed.setDate(parsed.getDate() + days)
+    return toDateInputValue(parsed.toISOString())
+  }
+
+  function bindSuggestion(suggestion: DynamicSuggestion) {
+    setDynamicDraft((prev) => {
+      const next = cloneDraft(prev)
+      const prefix = suggestion.kind === 'date_range' ? 'date_var' : 'num_var'
+      const variableKey = uniqueVariableKey(prefix, next)
+      if (suggestion.kind === 'date_range') {
+        const normalizedDate = toDateInputValue(suggestion.rawValue) || toDateInputValue(new Date().toISOString())
+        const rangeStyleOutput = suggestion.sourceType === 'click' || suggestion.inputType === 'date-range-click'
+        next.variables[variableKey] = {
+          kind: 'date_range',
+          start: normalizedDate,
+          end: addDaysIso(normalizedDate, 6),
+          stepUnit: 'day',
+          stepValue: 1,
+          output: rangeStyleOutput
+            ? 'text'
+            : suggestion.inputType === 'datetime-local'
+              ? 'datetime-local'
+              : 'date',
+        }
+      } else {
+        next.variables[variableKey] = {
+          kind: 'number_sequence',
+          start: Number.isFinite(suggestion.numericValue) ? suggestion.numericValue! : 0,
+          step: 1,
+          decimals: 0,
+          min: null,
+          max: null,
+        }
+      }
+
+      const existingIdx = next.bindings.findIndex((binding) => binding.eventIndex === suggestion.eventIndex)
+      const binding = {
+        eventIndex: suggestion.eventIndex,
+        variableKey,
+        selector: suggestion.selector,
+        mode: 'replace' as const,
+      }
+      if (existingIdx >= 0) next.bindings[existingIdx] = binding
+      else next.bindings.push(binding)
+      return next
+    })
+  }
+
+  function removeVariable(variableKey: string) {
+    setDynamicDraft((prev) => {
+      const next = cloneDraft(prev)
+      delete next.variables[variableKey]
+      next.bindings = next.bindings.filter((binding) => binding.variableKey !== variableKey)
+      return next
+    })
+  }
+
+  function removeBindingAt(index: number) {
+    setDynamicDraft((prev) => {
+      const next = cloneDraft(prev)
+      next.bindings.splice(index, 1)
+      return next
+    })
+  }
+
+  function variableUsageCount(variableKey: string) {
+    return dynamicDraft.bindings.filter((binding) => binding.variableKey === variableKey).length
+  }
+
+  function numberSequencePreview(variable: DynamicNumberSequenceVariable) {
+    const values = [0, 1, 2].map((idx) => {
+      const raw = variable.start + variable.step * idx
+      if (typeof variable.decimals === 'number') {
+        return raw.toFixed(variable.decimals)
+      }
+      return String(raw)
+    })
+    return values.join(' -> ')
+  }
+
+  function stepBindingHint(binding: DynamicBinding) {
+    const event = Array.isArray(workflow.events) ? workflow.events[binding.eventIndex] : null
+    if (!event) return 'No target event details available.'
+    const eventType = typeof event.type === 'string' ? event.type : 'event'
+    const selector =
+      typeof binding.selector === 'string' && binding.selector.trim()
+        ? binding.selector
+        : typeof event.selector === 'string'
+          ? event.selector
+          : ''
+    if (selector) return `${eventType} -> ${selector}`
+    return `${eventType} -> target selector unavailable`
+  }
+
+  async function saveDynamicInputs() {
+    setDynamicSaveState({ kind: 'saving', message: 'Saving dynamic input config…' })
+    try {
+      const response = await fetch(`/api/workflows/${workflow.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dynamicInputs: dynamicDraft }),
+      })
+      const payload = await response.json()
+      if (!response.ok) {
+        throw new Error(payload?.error || `Request failed with ${response.status}`)
+      }
+      const nextWorkflow = payload?.workflow
+      if (nextWorkflow?.dynamicInputs) {
+        setDynamicDraft(normalizeDynamicInputs(nextWorkflow.dynamicInputs))
+      }
+      setDynamicSaveState({ kind: 'success', message: 'Dynamic input config saved.' })
+    } catch (error) {
+      setDynamicSaveState({
+        kind: 'error',
+        message: (error as Error).message || 'Failed to save dynamic input config.',
+      })
+    }
+  }
 
   /** Formats timestamps for headers and run rows (en-US). */
   function fmtDate(iso: string) {
@@ -166,6 +529,298 @@ export default function WorkflowDetailClient({ workflow }: { workflow: Workflow 
               <div className="stat-label">Recorded Events</div>
             </div>
           </div>
+
+          {dynamicBindingEnabled && (
+            <>
+              <div className="section-title" style={{ marginBottom: 12 }}>Dynamic Inputs</div>
+              <div
+                style={{
+                  background: 'var(--bg2, #111)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 10,
+                  padding: '12px 14px',
+                  marginBottom: 28,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 10,
+                }}
+              >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {dynamicDraft.bindings.length} binding{dynamicDraft.bindings.length === 1 ? '' : 's'} · {Object.keys(dynamicDraft.variables).length} variable{Object.keys(dynamicDraft.variables).length === 1 ? '' : 's'}
+              </div>
+              <button
+                onClick={saveDynamicInputs}
+                disabled={dynamicSaveState.kind === 'saving'}
+                className="btn btn-primary"
+                style={{ width: 'auto', padding: '6px 14px', fontSize: 12 }}
+              >
+                {dynamicSaveState.kind === 'saving' ? 'Saving…' : 'Save Dynamic Inputs'}
+              </button>
+            </div>
+
+            {dynamicSaveState.kind !== 'idle' && (
+              <div
+                style={{
+                  fontSize: 11,
+                  color: dynamicSaveState.kind === 'error' ? 'var(--red, #ef4444)' : dynamicSaveState.kind === 'success' ? 'var(--green, #22c55e)' : 'var(--text-muted)',
+                }}
+              >
+                {dynamicSaveState.message}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Suggestions
+              </div>
+              {dynamicSuggestions.length === 0 ? (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  No date/number input events detected.
+                </div>
+              ) : (
+                dynamicSuggestions.slice(0, 8).map((suggestion) => (
+                  <div
+                    key={`${suggestion.eventIndex}-${suggestion.kind}`}
+                    className="dynamic-suggestion-card"
+                  >
+                    <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span className="dynamic-step-chip">Step #{suggestion.eventIndex + 1}</span>
+                        <span className={`dynamic-kind-chip ${suggestion.kind === 'date_range' ? 'date' : 'number'}`}>
+                          {suggestion.kind === 'date_range' ? 'Date range' : 'Number sequence'}
+                        </span>
+                      </div>
+                      <div className="dynamic-selector-line" title={suggestion.selector || 'No selector'}>
+                        {(suggestion.selector || 'No selector').slice(0, 160)}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {boundEventIndexes.has(suggestion.eventIndex) && (
+                        <span className="dynamic-bound-chip">Bound</span>
+                      )}
+                      <button
+                        className="btn btn-secondary"
+                        style={{ width: 'auto', padding: '6px 12px', fontSize: 11 }}
+                        onClick={() => bindSuggestion(suggestion)}
+                      >
+                        {boundEventIndexes.has(suggestion.eventIndex) ? 'Rebind' : 'Bind'}
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {Object.entries(dynamicDraft.variables).length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Variables
+                </div>
+                {Object.entries(dynamicDraft.variables).map(([variableKey, variable]) => (
+                  <div
+                    key={variableKey}
+                    className="dynamic-variable-card"
+                  >
+                    <div className="dynamic-variable-head">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <code style={{ color: 'var(--accent-light, #8b5cf6)', fontSize: 12 }}>{variableKey}</code>
+                        <span className={`dynamic-kind-chip ${variable.kind === 'date_range' ? 'date' : 'number'}`}>
+                          {variable.kind === 'date_range' ? 'Date Range Engine' : 'Number Generator'}
+                        </span>
+                        <span className="dynamic-bound-chip">
+                          Used in {variableUsageCount(variableKey)} step{variableUsageCount(variableKey) === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      <button className="btn btn-secondary" style={{ width: 'auto', padding: '3px 9px', fontSize: 11 }} onClick={() => removeVariable(variableKey)}>Remove</button>
+                    </div>
+
+                    <div className="dynamic-variable-subline">
+                      {variable.kind === 'date_range'
+                        ? 'Controls a rolling date window. Pick where it starts, where it ends, and how quickly it advances each run.'
+                        : 'Creates a predictable number pattern. Set the first value, the increment per run, and optional safety limits.'}
+                    </div>
+
+                    {variable.kind === 'date_range' ? (
+                      <div className="dynamic-variable-grid">
+                        <label className="dynamic-field">
+                          <span className="dynamic-field-label">Start Date</span>
+                          <input
+                            className="input"
+                            type="date"
+                            value={variable.start}
+                            onChange={(e) => setDynamicDraft((prev) => {
+                              const next = cloneDraft(prev)
+                              const target = next.variables[variableKey]
+                              if (target?.kind === 'date_range') target.start = e.target.value
+                              return next
+                            })}
+                          />
+                          <span className="dynamic-field-hint">First date injected into the target step.</span>
+                        </label>
+                        <label className="dynamic-field">
+                          <span className="dynamic-field-label">End Date</span>
+                          <input
+                            className="input"
+                            type="date"
+                            value={variable.end}
+                            onChange={(e) => setDynamicDraft((prev) => {
+                              const next = cloneDraft(prev)
+                              const target = next.variables[variableKey]
+                              if (target?.kind === 'date_range') target.end = e.target.value
+                              return next
+                            })}
+                          />
+                          <span className="dynamic-field-hint">Upper boundary for the rolling window.</span>
+                        </label>
+                        <label className="dynamic-field">
+                          <span className="dynamic-field-label">Step Unit</span>
+                          <select
+                            className="input"
+                            value={variable.stepUnit}
+                            onChange={(e) => setDynamicDraft((prev) => {
+                              const next = cloneDraft(prev)
+                              const target = next.variables[variableKey]
+                              if (target?.kind === 'date_range') target.stepUnit = e.target.value as DynamicDateRangeVariable['stepUnit']
+                              return next
+                            })}
+                          >
+                            <option value="day">day</option>
+                            <option value="week">week</option>
+                            <option value="month">month</option>
+                          </select>
+                          <span className="dynamic-field-hint">Time unit advanced every run.</span>
+                        </label>
+                        <label className="dynamic-field">
+                          <span className="dynamic-field-label">Step Size</span>
+                          <input
+                            className="input"
+                            type="number"
+                            min={1}
+                            max={365}
+                            value={variable.stepValue}
+                            onChange={(e) => setDynamicDraft((prev) => {
+                              const next = cloneDraft(prev)
+                              const target = next.variables[variableKey]
+                              if (target?.kind === 'date_range') {
+                                target.stepValue = Math.max(1, Number.parseInt(e.target.value, 10) || 1)
+                              }
+                              return next
+                            })}
+                          />
+                          <span className="dynamic-field-hint">How much to move the date forward each run.</span>
+                        </label>
+                      </div>
+                    ) : (
+                      <div className="dynamic-variable-grid">
+                        <label className="dynamic-field">
+                          <span className="dynamic-field-label">Start Value</span>
+                          <input
+                            className="input"
+                            type="number"
+                            value={variable.start}
+                            onChange={(e) => setDynamicDraft((prev) => {
+                              const next = cloneDraft(prev)
+                              const target = next.variables[variableKey]
+                              if (target?.kind === 'number_sequence') target.start = Number.parseFloat(e.target.value) || 0
+                              return next
+                            })}
+                          />
+                          <span className="dynamic-field-hint">Value used on the first execution.</span>
+                        </label>
+                        <label className="dynamic-field">
+                          <span className="dynamic-field-label">Step Delta</span>
+                          <input
+                            className="input"
+                            type="number"
+                            value={variable.step}
+                            onChange={(e) => setDynamicDraft((prev) => {
+                              const next = cloneDraft(prev)
+                              const target = next.variables[variableKey]
+                              if (target?.kind === 'number_sequence') target.step = Number.parseFloat(e.target.value) || 1
+                              return next
+                            })}
+                          />
+                          <span className="dynamic-field-hint">Amount added after each run.</span>
+                        </label>
+                        <label className="dynamic-field">
+                          <span className="dynamic-field-label">Minimum Limit</span>
+                          <input
+                            className="input"
+                            type="number"
+                            placeholder="Optional floor"
+                            value={variable.min ?? ''}
+                            onChange={(e) => setDynamicDraft((prev) => {
+                              const next = cloneDraft(prev)
+                              const target = next.variables[variableKey]
+                              if (target?.kind === 'number_sequence') target.min = e.target.value === '' ? null : Number.parseFloat(e.target.value)
+                              return next
+                            })}
+                          />
+                          <span className="dynamic-field-hint">Prevents generated values going below this.</span>
+                        </label>
+                        <label className="dynamic-field">
+                          <span className="dynamic-field-label">Maximum Limit</span>
+                          <input
+                            className="input"
+                            type="number"
+                            placeholder="Optional ceiling"
+                            value={variable.max ?? ''}
+                            onChange={(e) => setDynamicDraft((prev) => {
+                              const next = cloneDraft(prev)
+                              const target = next.variables[variableKey]
+                              if (target?.kind === 'number_sequence') target.max = e.target.value === '' ? null : Number.parseFloat(e.target.value)
+                              return next
+                            })}
+                          />
+                          <span className="dynamic-field-hint">Prevents generated values going above this.</span>
+                        </label>
+                        <div className="dynamic-preview-line" style={{ gridColumn: '1 / -1' }}>
+                          Preview: {numberSequencePreview(variable)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {dynamicDraft.bindings.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Bindings
+                </div>
+                {dynamicDraft.bindings.map((binding, idx) => (
+                  <div key={`${binding.eventIndex}-${idx}`} className="dynamic-binding-row">
+                    <span className="dynamic-step-chip">Step #{binding.eventIndex + 1}</span>
+                    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <select
+                        className="input"
+                        value={binding.variableKey}
+                        onChange={(e) => setDynamicDraft((prev) => {
+                          const next = cloneDraft(prev)
+                          next.bindings[idx] = { ...next.bindings[idx], variableKey: e.target.value }
+                          return next
+                        })}
+                      >
+                        {Object.keys(dynamicDraft.variables).map((variableKey) => (
+                          <option key={variableKey} value={variableKey}>{variableKey}</option>
+                        ))}
+                      </select>
+                      <div className="dynamic-binding-hint" title={stepBindingHint(binding)}>
+                        {stepBindingHint(binding)}
+                      </div>
+                    </div>
+                    <button className="btn btn-secondary" style={{ width: 'auto', padding: '3px 9px', fontSize: 11 }} onClick={() => removeBindingAt(idx)}>
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+              </div>
+            </>
+          )}
 
           {/* Recording screenshots */}
           <div className="section-title">Recording Checkpoints</div>

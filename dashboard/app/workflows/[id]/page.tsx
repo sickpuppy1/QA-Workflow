@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { getSession } from '@/lib/auth'
-import { getWorkflowDetailForUser } from '@/lib/data'
+import { getUserSettings, getWorkflowDetailForUser } from '@/lib/data'
 import WorkflowDetailClient from './WorkflowDetailClient'
 
 /** Server page: loads one workflow with screenshots and runs, or redirects. */
@@ -13,9 +13,17 @@ export default async function WorkflowDetailPage({
   if (!session) redirect('/login')
 
   const { id } = await params
-  const workflow = await getWorkflowDetailForUser(id, session.userId)
+  const [workflow, settings] = await Promise.all([
+    getWorkflowDetailForUser(id, session.userId),
+    getUserSettings(session.userId),
+  ])
 
   if (!workflow) redirect('/')
 
-  return <WorkflowDetailClient workflow={workflow} />
+  return (
+    <WorkflowDetailClient
+      workflow={workflow}
+      dynamicBindingEnabled={settings.dynamicBindingEnabled}
+    />
+  )
 }

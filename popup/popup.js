@@ -6,11 +6,12 @@
 // Dashboard URL — keep in sync with service-worker.js
 const DASHBOARD_URL = 'http://localhost:3000';
 const DASHBOARD_AUTH_STORAGE_KEYS = ['dashboardAuthToken', 'dashboardAuthUserId', 'dashboardAuthEmail'];
-const USER_SETTINGS_STORAGE_KEYS = ['playBufferSeconds', 'promptScreenshotLabel', 'networkMergeWindowMs'];
+const USER_SETTINGS_STORAGE_KEYS = ['playBufferSeconds', 'promptScreenshotLabel', 'networkMergeWindowMs', 'dynamicBindingEnabled'];
 const DEFAULT_USER_SETTINGS = {
   playBufferSeconds: 8,
   promptScreenshotLabel: false,
   networkMergeWindowMs: 500,
+  dynamicBindingEnabled: false,
 };
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
@@ -86,6 +87,10 @@ const playCurrentEvent  = document.getElementById("playCurrentEvent");
 const btnStopPlayback   = document.getElementById("btnStopPlayback");
 const checkpointThumbsPlay = document.getElementById("checkpointThumbsPlay");
 const noCheckpointsYet  = document.getElementById("noCheckpointsYet");
+const dynamicLiveCard   = document.getElementById("dynamicLiveCard");
+const dynamicLiveStatus = document.getElementById("dynamicLiveStatus");
+const dynamicLiveList   = document.getElementById("dynamicLiveList");
+const btnDynamicResume  = document.getElementById("btnDynamicResume");
 
 // Toast
 const toast             = document.getElementById("toast");
@@ -106,6 +111,7 @@ let userSettings        = { ...DEFAULT_USER_SETTINGS };
 // Playing state
 let workflowQueue       = [];     // array of parsed workflow JSONs to play sequentially
 let playScreenshots     = {};     // currently playing workflow's screenshots
+let playDynamicState    = null;   // live dynamic playback state pushed from SW
 
 function renderCheckpointLabelMode() {
   btnCheckpoint.title = promptScreenshotLabelToggle.checked
@@ -124,6 +130,8 @@ function renderCheckpointLabelMode() {
 async function init() {
   const res = await sendToSW({ type: "GET_STATE" });
   if (!res) return;
+  playDynamicState = res.dynamicState || null;
+  renderDynamicLivePanel();
 
   if (res.mode === "recording") {
     showPanel("recording");
@@ -196,7 +204,12 @@ function normalizeUserSettings(input = {}) {
     playBufferSeconds: normalizePlayBufferSeconds(input.playBufferSeconds),
     promptScreenshotLabel: Boolean(input.promptScreenshotLabel),
     networkMergeWindowMs: normalizeNetworkMergeWindowMs(input.networkMergeWindowMs),
+    dynamicBindingEnabled: Boolean(input.dynamicBindingEnabled),
   };
+}
+
+function isDynamicBindingEnabled() {
+  return Boolean(userSettings.dynamicBindingEnabled);
 }
 
 function applyUserSettings(nextSettings = {}) {
@@ -208,6 +221,8 @@ function applyUserSettings(nextSettings = {}) {
   networkMergeWindowMs.value = String(userSettings.networkMergeWindowMs);
   promptScreenshotLabelToggle.checked = userSettings.promptScreenshotLabel;
   renderCheckpointLabelMode();
+  renderQueue();
+  renderDynamicLivePanel();
   return userSettings;
 }
 
@@ -217,6 +232,7 @@ async function persistUserSettingsLocally(nextSettings = {}) {
     playBufferSeconds: resolvedSettings.playBufferSeconds,
     promptScreenshotLabel: resolvedSettings.promptScreenshotLabel,
     networkMergeWindowMs: resolvedSettings.networkMergeWindowMs,
+    dynamicBindingEnabled: resolvedSettings.dynamicBindingEnabled,
   });
   return resolvedSettings;
 }
@@ -823,6 +839,7 @@ btnAddQueueDb.addEventListener('click', async () => {
       name: wf.name,
       recordedAt: wf.recordedAt,
       events: wf.events,
+      dynamicInputs: normalizeWorkflowDynamicInputs(wf.dynamicInputs),
       loopEnabled: false,
       loopCount: 2,
     });
@@ -839,6 +856,435 @@ btnAddQueueDb.addEventListener('click', async () => {
     workflowSelect.disabled = !dashboardAuth.token;
   }
 });
+
+function isRecord(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function clampNumber(value, min, max, fallback) {
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeWorkflowDynamicInputs(input) {
+  if (!isRecord(input)) {
+    return {
+      version: 1,
+      variables: {},
+      bindings: [],
+    };
+  }
+
+  const rawVariables = isRecord(input.variables) ? input.variables : {};
+  const rawBindings = Array.isArray(input.bindings) ? input.bindings : [];
+  const variables = {};
+
+  Object.entries(rawVariables).forEach(([key, variable]) => {
+    if (!key || !isRecord(variable)) return;
+    if (variable.kind === 'date_range') {
+      variables[key] = {
+        kind: 'date_range',
+        start: typeof variable.start === 'string' ? variable.start : '',
+        end: typeof variable.end === 'string' ? variable.end : '',
+        stepUnit: variable.stepUnit === 'week' || variable.stepUnit === 'month' ? variable.stepUnit : 'day',
+        stepValue: Math.max(1, Math.trunc(clampNumber(variable.stepValue, 1, 365, 1))),
+        output: variable.output === 'datetime-local' || variable.output === 'text' ? variable.output : 'date',
+      };
+    } else if (variable.kind === 'number_sequence') {
+      variables[key] = {
+        kind: 'number_sequence',
+        start: clampNumber(variable.start, -1e12, 1e12, 0),
+        step: clampNumber(variable.step, -1e9, 1e9, 1),
+        decimals: variable.decimals == null ? null : Math.max(0, Math.min(8, Math.trunc(clampNumber(variable.decimals, 0, 8, 0)))),
+        min: variable.min == null ? null : clampNumber(variable.min, -1e12, 1e12, -1e12),
+        max: variable.max == null ? null : clampNumber(variable.max, -1e12, 1e12, 1e12),
+      };
+    }
+  });
+
+  const bindings = rawBindings
+    .map((binding) => {
+      if (!isRecord(binding)) return null;
+      const eventIndex = Math.max(0, Math.trunc(clampNumber(binding.eventIndex, 0, 1e6, -1)));
+      const variableKey = typeof binding.variableKey === 'string' ? binding.variableKey : '';
+      if (!variableKey || !Number.isFinite(eventIndex)) return null;
+      return {
+        eventIndex,
+        variableKey,
+        selector: typeof binding.selector === 'string' ? binding.selector : null,
+        mode: 'replace',
+      };
+    })
+    .filter((binding) => binding && variables[binding.variableKey]);
+
+  return {
+    version: 1,
+    variables,
+    bindings,
+  };
+}
+
+function ensureWorkflowDynamicInputs(workflow) {
+  workflow.dynamicInputs = normalizeWorkflowDynamicInputs(workflow.dynamicInputs);
+  return workflow.dynamicInputs;
+}
+
+function detectDynamicSuggestions(events = []) {
+  if (!Array.isArray(events)) return [];
+  const suggestions = [];
+  const datePattern = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?)?$/;
+
+  events.forEach((event, eventIndex) => {
+    if (!event) return;
+    const selector = typeof event.selector === 'string' ? event.selector : null;
+    const inputType = String(event.inputType || '').toLowerCase();
+    const tagName = String(event.tagName || '').toLowerCase();
+
+    if (event.type === 'click') {
+      const hintText = `${selector || ''} ${event.placeholder || ''} ${event.label || ''}`.toLowerCase();
+      const looksDateField =
+        (tagName === 'input' || tagName === 'textarea') &&
+        /date|selecteddate|range/.test(hintText) &&
+        !/daterangepicker|calendar|applybtn|cancelbtn/.test(hintText);
+      if (looksDateField) {
+        suggestions.push({
+          eventIndex,
+          selector,
+          kind: 'date_range',
+          rawValue: toDateInputValue(new Date()),
+          inputType: 'date-range-click',
+          sourceType: 'click',
+        });
+      }
+      return;
+    }
+
+    if (event.type !== 'input' && event.type !== 'change') return;
+    const rawValue = event.value;
+    const valueString = rawValue == null ? '' : String(rawValue).trim();
+
+    if (typeof rawValue === 'boolean') return;
+    if (!valueString) return;
+
+    const looksDate =
+      inputType === 'date' ||
+      inputType === 'datetime-local' ||
+      datePattern.test(valueString);
+
+    if (looksDate) {
+      suggestions.push({
+        eventIndex,
+        selector,
+        kind: 'date_range',
+        rawValue: valueString,
+        inputType,
+        sourceType: event.type,
+      });
+      return;
+    }
+
+    const maybeNumber = Number.parseFloat(valueString);
+    const looksNumber =
+      inputType === 'number' ||
+      /^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(valueString) ||
+      Number.isFinite(maybeNumber);
+    if (looksNumber && Number.isFinite(maybeNumber)) {
+      suggestions.push({
+        eventIndex,
+        selector,
+        kind: 'number_sequence',
+        rawValue: valueString,
+        numericValue: maybeNumber,
+        inputType,
+        sourceType: event.type,
+      });
+    }
+  });
+
+  return suggestions;
+}
+
+function uniqueVariableKey(dynamicInputs, prefix) {
+  const existing = new Set(Object.keys(dynamicInputs.variables || {}));
+  let idx = 1;
+  let key = `${prefix}_${idx}`;
+  while (existing.has(key)) {
+    idx += 1;
+    key = `${prefix}_${idx}`;
+  }
+  return key;
+}
+
+function toDateInputValue(source) {
+  const date = new Date(source);
+  if (Number.isNaN(date.getTime())) return '';
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function addDaysISO(sourceDateString, days) {
+  const parsed = new Date(sourceDateString);
+  if (Number.isNaN(parsed.getTime())) return sourceDateString;
+  parsed.setDate(parsed.getDate() + days);
+  return toDateInputValue(parsed);
+}
+
+function addVariableFromSuggestion(workflow, suggestion) {
+  const dynamicInputs = ensureWorkflowDynamicInputs(workflow);
+  const prefix = suggestion.kind === 'date_range' ? 'date_var' : 'num_var';
+  const variableKey = uniqueVariableKey(dynamicInputs, prefix);
+
+  if (suggestion.kind === 'date_range') {
+    const normalizedDate = toDateInputValue(suggestion.rawValue) || toDateInputValue(new Date());
+    const rangeStyleOutput = suggestion.sourceType === 'click' || suggestion.inputType === 'date-range-click';
+    dynamicInputs.variables[variableKey] = {
+      kind: 'date_range',
+      start: normalizedDate,
+      end: addDaysISO(normalizedDate, 6),
+      stepUnit: 'day',
+      stepValue: 1,
+      output: rangeStyleOutput
+        ? 'text'
+        : suggestion.inputType === 'datetime-local'
+          ? 'datetime-local'
+          : 'date',
+    };
+  } else {
+    dynamicInputs.variables[variableKey] = {
+      kind: 'number_sequence',
+      start: Number.isFinite(suggestion.numericValue) ? suggestion.numericValue : 0,
+      step: 1,
+      decimals: 0,
+      min: null,
+      max: null,
+    };
+  }
+
+  const existingIdx = dynamicInputs.bindings.findIndex((binding) => binding.eventIndex === suggestion.eventIndex);
+  const nextBinding = {
+    eventIndex: suggestion.eventIndex,
+    variableKey,
+    selector: suggestion.selector,
+    mode: 'replace',
+  };
+  if (existingIdx >= 0) {
+    dynamicInputs.bindings[existingIdx] = nextBinding;
+  } else {
+    dynamicInputs.bindings.push(nextBinding);
+  }
+}
+
+function renderDynamicEditor(item, workflow, workflowIndex) {
+  const dynamicInputs = ensureWorkflowDynamicInputs(workflow);
+  const suggestions = detectDynamicSuggestions(workflow.events || []);
+  const dynamicWrap = document.createElement('div');
+  dynamicWrap.className = 'queue-dynamic';
+
+  const title = document.createElement('div');
+  title.className = 'queue-dynamic-title';
+  title.textContent = 'Dynamic Inputs';
+  dynamicWrap.appendChild(title);
+
+  const summary = document.createElement('div');
+  summary.className = 'queue-dynamic-summary';
+  summary.textContent = `${dynamicInputs.bindings.length} binding${dynamicInputs.bindings.length === 1 ? '' : 's'} · ${Object.keys(dynamicInputs.variables).length} variable${Object.keys(dynamicInputs.variables).length === 1 ? '' : 's'}`;
+  dynamicWrap.appendChild(summary);
+
+  const suggestionList = document.createElement('div');
+  suggestionList.className = 'queue-dynamic-suggestions';
+  suggestions.slice(0, 4).forEach((suggestion) => {
+    const row = document.createElement('div');
+    row.className = 'queue-dynamic-row';
+
+    const label = document.createElement('div');
+    label.className = 'queue-dynamic-label';
+    const eventLabel = suggestion.selector ? `${suggestion.selector.slice(0, 32)}` : `Event ${suggestion.eventIndex + 1}`;
+    label.textContent = `${suggestion.kind === 'date_range' ? 'Date' : 'Number'} · #${suggestion.eventIndex + 1} · ${eventLabel}`;
+
+    const bindBtn = document.createElement('button');
+    bindBtn.className = 'btn btn-secondary queue-dynamic-btn';
+    bindBtn.textContent = 'Bind';
+    bindBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      addVariableFromSuggestion(workflow, suggestion);
+      renderQueue();
+    });
+
+    row.appendChild(label);
+    row.appendChild(bindBtn);
+    suggestionList.appendChild(row);
+  });
+
+  if (suggestionList.childElementCount > 0) {
+    dynamicWrap.appendChild(suggestionList);
+  }
+
+  const variableEntries = Object.entries(dynamicInputs.variables);
+  variableEntries.forEach(([variableKey, variable]) => {
+    const row = document.createElement('div');
+    row.className = 'queue-dynamic-var';
+
+    const rowHeader = document.createElement('div');
+    rowHeader.className = 'queue-dynamic-var-head';
+    const keyEl = document.createElement('code');
+    keyEl.textContent = variableKey;
+    rowHeader.appendChild(keyEl);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'queue-item-remove';
+    removeBtn.textContent = 'x';
+    removeBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      delete dynamicInputs.variables[variableKey];
+      dynamicInputs.bindings = dynamicInputs.bindings.filter((binding) => binding.variableKey !== variableKey);
+      renderQueue();
+    });
+    rowHeader.appendChild(removeBtn);
+    row.appendChild(rowHeader);
+
+    if (variable.kind === 'date_range') {
+      const startInput = document.createElement('input');
+      startInput.type = 'date';
+      startInput.className = 'input queue-dynamic-input';
+      startInput.value = variable.start || '';
+      startInput.addEventListener('change', () => {
+        variable.start = startInput.value;
+      });
+
+      const endInput = document.createElement('input');
+      endInput.type = 'date';
+      endInput.className = 'input queue-dynamic-input';
+      endInput.value = variable.end || '';
+      endInput.addEventListener('change', () => {
+        variable.end = endInput.value;
+      });
+
+      const unitSelect = document.createElement('select');
+      unitSelect.className = 'db-select queue-dynamic-select';
+      ['day', 'week', 'month'].forEach((unit) => {
+        const option = document.createElement('option');
+        option.value = unit;
+        option.textContent = unit;
+        if (variable.stepUnit === unit) option.selected = true;
+        unitSelect.appendChild(option);
+      });
+      unitSelect.addEventListener('change', () => {
+        variable.stepUnit = unitSelect.value;
+      });
+
+      const stepInput = document.createElement('input');
+      stepInput.type = 'number';
+      stepInput.min = '1';
+      stepInput.max = '365';
+      stepInput.className = 'input queue-dynamic-input';
+      stepInput.value = String(variable.stepValue ?? 1);
+      stepInput.addEventListener('change', () => {
+        variable.stepValue = Math.max(1, Number.parseInt(stepInput.value, 10) || 1);
+        stepInput.value = String(variable.stepValue);
+      });
+
+      row.appendChild(startInput);
+      row.appendChild(endInput);
+      row.appendChild(unitSelect);
+      row.appendChild(stepInput);
+    } else {
+      const startInput = document.createElement('input');
+      startInput.type = 'number';
+      startInput.className = 'input queue-dynamic-input';
+      startInput.value = String(variable.start ?? 0);
+      startInput.addEventListener('change', () => {
+        variable.start = Number.parseFloat(startInput.value) || 0;
+      });
+
+      const stepInput = document.createElement('input');
+      stepInput.type = 'number';
+      stepInput.className = 'input queue-dynamic-input';
+      stepInput.value = String(variable.step ?? 1);
+      stepInput.addEventListener('change', () => {
+        variable.step = Number.parseFloat(stepInput.value) || 1;
+      });
+
+      const minInput = document.createElement('input');
+      minInput.type = 'number';
+      minInput.className = 'input queue-dynamic-input';
+      minInput.placeholder = 'Min (opt)';
+      minInput.value = variable.min == null ? '' : String(variable.min);
+      minInput.addEventListener('change', () => {
+        variable.min = minInput.value === '' ? null : Number.parseFloat(minInput.value);
+      });
+
+      const maxInput = document.createElement('input');
+      maxInput.type = 'number';
+      maxInput.className = 'input queue-dynamic-input';
+      maxInput.placeholder = 'Max (opt)';
+      maxInput.value = variable.max == null ? '' : String(variable.max);
+      maxInput.addEventListener('change', () => {
+        variable.max = maxInput.value === '' ? null : Number.parseFloat(maxInput.value);
+      });
+
+      row.appendChild(startInput);
+      row.appendChild(stepInput);
+      row.appendChild(minInput);
+      row.appendChild(maxInput);
+    }
+
+    dynamicWrap.appendChild(row);
+  });
+
+  if (dynamicInputs.bindings.length > 0) {
+    const bindingBlock = document.createElement('div');
+    bindingBlock.className = 'queue-dynamic-bindings';
+    dynamicInputs.bindings.forEach((binding, bindingIndex) => {
+      const bindingRow = document.createElement('div');
+      bindingRow.className = 'queue-dynamic-binding-row';
+
+      const bindingText = document.createElement('span');
+      bindingText.className = 'queue-dynamic-binding-text';
+      bindingText.textContent = `#${binding.eventIndex + 1} → ${binding.variableKey}`;
+
+      const select = document.createElement('select');
+      select.className = 'db-select queue-dynamic-select';
+      Object.keys(dynamicInputs.variables).forEach((variableKey) => {
+        const option = document.createElement('option');
+        option.value = variableKey;
+        option.textContent = variableKey;
+        if (binding.variableKey === variableKey) option.selected = true;
+        select.appendChild(option);
+      });
+      select.addEventListener('change', () => {
+        binding.variableKey = select.value;
+      });
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'queue-item-remove';
+      removeBtn.textContent = 'x';
+      removeBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        dynamicInputs.bindings.splice(bindingIndex, 1);
+        renderQueue();
+      });
+
+      bindingRow.appendChild(bindingText);
+      bindingRow.appendChild(select);
+      bindingRow.appendChild(removeBtn);
+      bindingBlock.appendChild(bindingRow);
+    });
+    dynamicWrap.appendChild(bindingBlock);
+  }
+
+  if (Object.keys(dynamicInputs.variables).length === 0 && suggestions.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'queue-dynamic-summary';
+    empty.textContent = 'No date/number input suggestions found in this workflow.';
+    dynamicWrap.appendChild(empty);
+  }
+
+  item.appendChild(dynamicWrap);
+  workflowQueue[workflowIndex].dynamicInputs = normalizeWorkflowDynamicInputs(dynamicInputs);
+}
 
 /**
  * Renders the playback queue list and enables or disables the Play button.
@@ -900,13 +1346,27 @@ function renderQueue() {
     const loopText = document.createElement('span');
     loopText.textContent = 'Loop';
 
+    const loopStepper = document.createElement('div');
+    loopStepper.className = 'queue-loop-stepper';
+    loopStepper.classList.toggle('hidden', !wf.loopEnabled);
+
+    const loopMinus = document.createElement('button');
+    loopMinus.type = 'button';
+    loopMinus.className = 'queue-loop-stepper-btn';
+    loopMinus.textContent = '−';
+    loopMinus.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const nextValue = Math.max(2, (Number.parseInt(loopCount.value, 10) || 2) - 1);
+      wf.loopCount = nextValue;
+      loopCount.value = String(nextValue);
+    });
+
     const loopCount = document.createElement('input');
-    loopCount.type = 'number';
-    loopCount.min = '2';
-    loopCount.max = '99';
+    loopCount.type = 'text';
+    loopCount.inputMode = 'numeric';
+    loopCount.pattern = '[0-9]*';
     loopCount.value = String(Math.max(2, Number.parseInt(wf.loopCount, 10) || 2));
     loopCount.className = 'input queue-loop-count';
-    loopCount.classList.toggle('hidden', !wf.loopEnabled);
     loopCount.addEventListener('click', (event) => event.stopPropagation());
     const commitLoopCount = () => {
       const nextValue = Math.max(2, Number.parseInt(loopCount.value, 10) || 2);
@@ -916,10 +1376,25 @@ function renderQueue() {
     loopCount.addEventListener('input', commitLoopCount);
     loopCount.addEventListener('change', commitLoopCount);
 
+    const loopPlus = document.createElement('button');
+    loopPlus.type = 'button';
+    loopPlus.className = 'queue-loop-stepper-btn';
+    loopPlus.textContent = '+';
+    loopPlus.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const nextValue = Math.min(99, (Number.parseInt(loopCount.value, 10) || 2) + 1);
+      wf.loopCount = nextValue;
+      loopCount.value = String(nextValue);
+    });
+
+    loopStepper.appendChild(loopMinus);
+    loopStepper.appendChild(loopCount);
+    loopStepper.appendChild(loopPlus);
+
     loopLabel.appendChild(loopCheckbox);
     loopLabel.appendChild(loopText);
     loopControls.appendChild(loopLabel);
-    loopControls.appendChild(loopCount);
+    loopControls.appendChild(loopStepper);
     
     const rmBtn = document.createElement('button');
     rmBtn.className = 'queue-item-remove';
@@ -934,6 +1409,9 @@ function renderQueue() {
     controlsRow.appendChild(loopControls);
     item.appendChild(topRow);
     item.appendChild(controlsRow);
+    if (isDynamicBindingEnabled()) {
+      renderDynamicEditor(item, wf, i);
+    }
     queueList.appendChild(item);
   });
 }
@@ -953,6 +1431,7 @@ fileInput.addEventListener("change", async (e) => {
     workflowQueue.push({
       ...parsed,
       name: parsed.name || file.name,
+      dynamicInputs: normalizeWorkflowDynamicInputs(parsed.dynamicInputs),
       loopEnabled: false,
       loopCount: 2,
     });
@@ -972,6 +1451,8 @@ btnPlay.addEventListener("click", async () => {
   if (workflowQueue.length === 0) return;
 
   playScreenshots = {};
+  playDynamicState = null;
+  renderDynamicLivePanel();
   playProgressBar.style.width = "0%";
   playProgressText.textContent = `0 / ${workflowQueue[0].events.length}`;
   playCurrentEvent.textContent = "Starting Queue…";
@@ -980,6 +1461,9 @@ btnPlay.addEventListener("click", async () => {
 
   const workflows = workflowQueue.map((workflow) => ({
     ...workflow,
+    dynamicInputs: isDynamicBindingEnabled()
+      ? normalizeWorkflowDynamicInputs(workflow.dynamicInputs)
+      : null,
     loopEnabled: Boolean(workflow.loopEnabled),
     loopCount: workflow.loopEnabled
       ? Math.max(2, Number.parseInt(workflow.loopCount, 10) || 2)
@@ -996,8 +1480,17 @@ btnPlay.addEventListener("click", async () => {
 
 btnStopPlayback.addEventListener("click", async () => {
   await sendToSW({ type: "STOP_PLAYBACK" });
+  playDynamicState = null;
+  renderDynamicLivePanel();
   showPanel("idle");
   showToast("Playback stopped.", "");
+});
+
+btnDynamicResume?.addEventListener("click", async () => {
+  const response = await sendToSW({ type: "PLAYBACK_RESUME" });
+  if (!response?.ok) {
+    showToast(response?.error || "Playback is not paused.", "error");
+  }
 });
 
 
@@ -1064,6 +1557,30 @@ chrome.runtime.onMessage.addListener((msg) => {
       }
       break;
 
+    case "PLAYBACK_DYNAMIC_STATE":
+      if (!isDynamicBindingEnabled()) {
+        playDynamicState = null;
+        renderDynamicLivePanel();
+        break;
+      }
+      playDynamicState = msg;
+      renderDynamicLivePanel();
+      break;
+
+    case "PLAYBACK_DYNAMIC_PAUSED":
+      if (!isDynamicBindingEnabled()) {
+        break;
+      }
+      playDynamicState = {
+        ...(playDynamicState || {}),
+        active: true,
+        paused: true,
+        pauseIssue: msg,
+      };
+      renderDynamicLivePanel();
+      showToast(msg?.message || "Playback paused for dynamic input.", "error");
+      break;
+
     case "WORKFLOW_PLAYBACK_COMPLETE":
       showToast(`Completed: ${msg.name}`, "success");
       break;
@@ -1077,6 +1594,8 @@ chrome.runtime.onMessage.addListener((msg) => {
       // Only return to idle — do NOT call handlePlaybackComplete() here because
       // that function shows "Entire queue completed." (success), which would
       // immediately overwrite this error toast with a false-positive message.
+      playDynamicState = null;
+      renderDynamicLivePanel();
       showPanel("idle");
       break;
     }
@@ -1087,6 +1606,8 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case "PLAYBACK_STOPPED":
+      playDynamicState = null;
+      renderDynamicLivePanel();
       showPanel("idle");
       break;
 
@@ -1102,8 +1623,179 @@ chrome.runtime.onMessage.addListener((msg) => {
  * Calls `showPanel("idle")` then `showToast` for a neutral success message.
  */
 function handlePlaybackComplete() {
+  playDynamicState = null;
+  renderDynamicLivePanel();
   showPanel("idle");
   showToast("Entire queue completed.", "success");
+}
+
+function parseDateSafe(value) {
+  const parsed = new Date(String(value ?? ""));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatDateLikeInput(date, output) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  if (output === 'datetime-local') return `${y}-${m}-${d}T${hh}:${mm}`;
+  if (output === 'text') return `${y}-${m}-${d} ${hh}:${mm}`;
+  return `${y}-${m}-${d}`;
+}
+
+function shiftDateValue(value, stepUnit, amount, output) {
+  const parsed = parseDateSafe(value);
+  if (!parsed) return value;
+  if (stepUnit === 'month') {
+    parsed.setMonth(parsed.getMonth() + amount);
+  } else if (stepUnit === 'week') {
+    parsed.setDate(parsed.getDate() + (amount * 7));
+  } else {
+    parsed.setDate(parsed.getDate() + amount);
+  }
+  return formatDateLikeInput(parsed, output);
+}
+
+async function applyDynamicOverride(variableKey, value) {
+  if (!playDynamicState?.active) return;
+  const res = await sendToSW({
+    type: "PLAYBACK_DYNAMIC_UPDATE",
+    workflowQueueIndex: playDynamicState.workflowQueueIndex,
+    overrides: {
+      [variableKey]: value,
+    },
+  });
+  if (!res?.ok) {
+    showToast(`Dynamic update failed: ${res?.error || 'unknown error'}`, 'error');
+  }
+}
+
+function renderDynamicLivePanel() {
+  if (!dynamicLiveCard || !dynamicLiveStatus || !dynamicLiveList || !btnDynamicResume) return;
+  if (!isDynamicBindingEnabled()) {
+    dynamicLiveCard.classList.add('hidden');
+    btnDynamicResume.classList.add('hidden');
+    dynamicLiveStatus.textContent = 'Dynamic bindings are disabled in dashboard settings.';
+    dynamicLiveStatus.className = 'db-status';
+    dynamicLiveList.innerHTML = '';
+    return;
+  }
+  dynamicLiveList.innerHTML = '';
+
+  const statePayload = playDynamicState;
+  if (!statePayload?.active || !isRecord(statePayload.dynamicInputs?.variables)) {
+    dynamicLiveCard.classList.add('hidden');
+    btnDynamicResume.classList.add('hidden');
+    dynamicLiveStatus.textContent = 'No dynamic bindings active.';
+    return;
+  }
+
+  dynamicLiveCard.classList.remove('hidden');
+  const pauseIssue = statePayload.pauseIssue;
+  if (statePayload.paused && pauseIssue) {
+    dynamicLiveStatus.textContent = `Paused at step #${(pauseIssue.eventIndex ?? 0) + 1}: ${pauseIssue.message || pauseIssue.reason || 'Dynamic value issue'}`;
+    dynamicLiveStatus.className = 'db-status error';
+    btnDynamicResume.classList.remove('hidden');
+  } else {
+    dynamicLiveStatus.textContent = `Loop ${Number.parseInt(statePayload.loopIndex, 10) + 1} dynamic values are active.`;
+    dynamicLiveStatus.className = 'db-status';
+    btnDynamicResume.classList.add('hidden');
+  }
+
+  const values = isRecord(statePayload.values) ? statePayload.values : {};
+  const errors = isRecord(statePayload.errors) ? statePayload.errors : {};
+  const overrides = isRecord(statePayload.overrides) ? statePayload.overrides : {};
+
+  Object.entries(statePayload.dynamicInputs.variables).forEach(([variableKey, variable]) => {
+    const row = document.createElement('div');
+    row.className = 'dynamic-live-row';
+
+    const labelWrap = document.createElement('div');
+    labelWrap.className = 'dynamic-live-meta';
+
+    const keyEl = document.createElement('code');
+    keyEl.textContent = variableKey;
+    labelWrap.appendChild(keyEl);
+
+    const infoEl = document.createElement('div');
+    infoEl.className = 'dynamic-live-value';
+    if (errors[variableKey]) {
+      infoEl.textContent = errors[variableKey].message || errors[variableKey].reason || 'Invalid value';
+      infoEl.classList.add('error');
+    } else {
+      const currentValue = overrides[variableKey] ?? values[variableKey] ?? '';
+      infoEl.textContent = String(currentValue);
+    }
+    labelWrap.appendChild(infoEl);
+
+    const controls = document.createElement('div');
+    controls.className = 'dynamic-live-controls';
+
+    const input = document.createElement('input');
+    input.className = 'input dynamic-live-input';
+    input.value = String(overrides[variableKey] ?? values[variableKey] ?? '');
+
+    if (variable.kind === 'number_sequence') {
+      input.type = 'number';
+      input.step = String(variable.step || 1);
+      if (variable.min != null) input.min = String(variable.min);
+      if (variable.max != null) input.max = String(variable.max);
+    } else if (variable.kind === 'date_range') {
+      input.type = variable.output === 'datetime-local' ? 'datetime-local' : 'date';
+    } else {
+      input.type = 'text';
+    }
+
+    input.addEventListener('change', () => {
+      applyDynamicOverride(variableKey, input.value);
+    });
+
+    const decBtn = document.createElement('button');
+    decBtn.className = 'btn btn-secondary dynamic-live-btn';
+    decBtn.textContent = '-';
+    decBtn.addEventListener('click', async () => {
+      const currentValue = overrides[variableKey] ?? values[variableKey] ?? '';
+      if (variable.kind === 'number_sequence') {
+        const numeric = Number.parseFloat(String(currentValue || variable.start || 0));
+        const next = Number.isFinite(numeric) ? numeric - (Number.parseFloat(String(variable.step || 1)) || 1) : (variable.start || 0);
+        input.value = String(next);
+        await applyDynamicOverride(variableKey, next);
+      } else if (variable.kind === 'date_range') {
+        const stepAmount = Number.parseInt(String(variable.stepValue || 1), 10) || 1;
+        const next = shiftDateValue(currentValue || variable.start, variable.stepUnit, -stepAmount, variable.output);
+        input.value = String(next);
+        await applyDynamicOverride(variableKey, next);
+      }
+    });
+
+    const incBtn = document.createElement('button');
+    incBtn.className = 'btn btn-secondary dynamic-live-btn';
+    incBtn.textContent = '+';
+    incBtn.addEventListener('click', async () => {
+      const currentValue = overrides[variableKey] ?? values[variableKey] ?? '';
+      if (variable.kind === 'number_sequence') {
+        const numeric = Number.parseFloat(String(currentValue || variable.start || 0));
+        const next = Number.isFinite(numeric) ? numeric + (Number.parseFloat(String(variable.step || 1)) || 1) : (variable.start || 0);
+        input.value = String(next);
+        await applyDynamicOverride(variableKey, next);
+      } else if (variable.kind === 'date_range') {
+        const stepAmount = Number.parseInt(String(variable.stepValue || 1), 10) || 1;
+        const next = shiftDateValue(currentValue || variable.start, variable.stepUnit, stepAmount, variable.output);
+        input.value = String(next);
+        await applyDynamicOverride(variableKey, next);
+      }
+    });
+
+    controls.appendChild(decBtn);
+    controls.appendChild(input);
+    controls.appendChild(incBtn);
+
+    row.appendChild(labelWrap);
+    row.appendChild(controls);
+    dynamicLiveList.appendChild(row);
+  });
 }
 
 // ─── Thumbnail helper ─────────────────────────────────────────────────────────

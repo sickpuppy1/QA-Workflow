@@ -73,18 +73,16 @@
         </div>
 
         <!-- Play Settings -->
-        <div class="settings-row"
-          style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px; margin-top: 6px; padding: 0 4px;">
-          <label for="playBufferSeconds" style="font-size:12px; color:#9ca3af;">DOM Load Buffer (seconds):</label>
-          <input type="number" id="playBufferSeconds" class="input"
-            style="width:60px; text-align:right; padding:4px 8px;" min="0" max="60" value="8" />
+        <div class="settings-row">
+          <label for="playBufferSeconds" class="settings-label">DOM Load Buffer (seconds)</label>
+          <input type="number" id="playBufferSeconds" class="input settings-input"
+            min="0" max="60" value="8" />
         </div>
 
-        <div class="settings-row"
-          style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px; padding: 0 4px;">
-          <label for="networkMergeWindowMs" style="font-size:12px; color:#9ca3af;">Network Merge Window (ms):</label>
-          <input type="number" id="networkMergeWindowMs" class="input"
-            style="width:80px; text-align:right; padding:4px 8px;" min="100" max="2000" value="500" />
+        <div class="settings-row">
+          <label for="networkMergeWindowMs" class="settings-label">Network Merge Window (ms)</label>
+          <input type="number" id="networkMergeWindowMs" class="input settings-input"
+            min="100" max="2000" value="500" />
         </div>
 
         <button class="btn btn-play" id="btnPlay" disabled>
@@ -225,6 +223,13 @@
     </div>
 
     <div class="play-event-label" id="playCurrentEvent">Initialising…</div>
+
+    <div class="card hidden" id="dynamicLiveCard">
+      <div class="card-label">Dynamic Inputs</div>
+      <div id="dynamicLiveStatus" class="db-status">No dynamic bindings active.</div>
+      <div id="dynamicLiveList" class="dynamic-live-list"></div>
+      <button class="btn btn-secondary hidden" id="btnDynamicResume">Resume Playback</button>
+    </div>
 
     <!-- Checkpoint thumbnails captured during playback -->
     <div class="card">

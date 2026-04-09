@@ -22,6 +22,9 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
   const [promptScreenshotLabel, setPromptScreenshotLabel] = useState(
     initialSettings.promptScreenshotLabel
   )
+  const [dynamicBindingEnabled, setDynamicBindingEnabled] = useState(
+    initialSettings.dynamicBindingEnabled
+  )
   const [saving, setSaving] = useState(false)
   const [feedback, setFeedback] = useState<{
     type: 'success' | 'error' | ''
@@ -69,6 +72,7 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
           playBufferSeconds: parsedBuffer,
           promptScreenshotLabel,
           networkMergeWindowMs: parsedNetworkMergeWindow,
+          dynamicBindingEnabled,
         }),
       })
       const data = await res.json()
@@ -80,6 +84,7 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
       setPlayBufferSeconds(String(data.settings.playBufferSeconds))
       setPromptScreenshotLabel(Boolean(data.settings.promptScreenshotLabel))
       setNetworkMergeWindowMs(String(data.settings.networkMergeWindowMs))
+      setDynamicBindingEnabled(Boolean(data.settings.dynamicBindingEnabled))
       setFeedback({
         type: 'success',
         message: 'Settings saved. The extension will use them the next time the popup opens.',
@@ -149,100 +154,100 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
         </div>
 
         <div className="content">
-          <form onSubmit={handleSubmit} className="card" style={{ maxWidth: 720 }}>
-            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 10 }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--accent-light)' }}>
+          <form onSubmit={handleSubmit} className="card settings-card">
+            <div className="settings-title-row">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="settings-title-icon">
                 <polygon points="5 3 19 12 5 21 5 3" />
               </svg>
               Extension Playback
             </div>
-            <div style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 24 }}>
+            <div className="settings-subtitle">
               Update the defaults used by the Chrome extension when this account is signed in.
             </div>
 
-            <div className="form-group">
-              <label className="form-label" htmlFor="settings-play-buffer">
-                DOM Load Buffer (seconds)
-              </label>
-              <input
-                id="settings-play-buffer"
-                type="number"
-                min={0}
-                max={60}
-                className="form-input"
-                value={playBufferSeconds}
-                onChange={(event) => setPlayBufferSeconds(event.target.value)}
-              />
-              <div className="form-hint" style={{ textAlign: 'left', marginTop: 4 }}>
-                Extra wait time before playback continues after page loads.
+            <div className="settings-field-grid">
+              <div className="settings-field">
+                <label className="form-label settings-form-label" htmlFor="settings-play-buffer">
+                  DOM Load Buffer (seconds)
+                </label>
+                <input
+                  id="settings-play-buffer"
+                  type="number"
+                  min={0}
+                  max={60}
+                  className="form-input settings-form-input"
+                  value={playBufferSeconds}
+                  onChange={(event) => setPlayBufferSeconds(event.target.value)}
+                />
+                <div className="settings-field-hint">
+                  Extra wait time before playback continues after page loads.
+                </div>
               </div>
-            </div>
 
-            <div className="form-group">
-              <label className="form-label" htmlFor="settings-network-merge-window">
-                Network Merge Window (ms)
-              </label>
-              <input
-                id="settings-network-merge-window"
-                type="number"
-                min={100}
-                max={2000}
-                className="form-input"
-                value={networkMergeWindowMs}
-                onChange={(event) => setNetworkMergeWindowMs(event.target.value)}
-              />
-              <div className="form-hint" style={{ textAlign: 'left', marginTop: 4 }}>
-                Requests with the same URL and method inside this time window may be merged.
+              <div className="settings-field">
+                <label className="form-label settings-form-label" htmlFor="settings-network-merge-window">
+                  Network Merge Window (ms)
+                </label>
+                <input
+                  id="settings-network-merge-window"
+                  type="number"
+                  min={100}
+                  max={2000}
+                  className="form-input settings-form-input"
+                  value={networkMergeWindowMs}
+                  onChange={(event) => setNetworkMergeWindowMs(event.target.value)}
+                />
+                <div className="settings-field-hint">
+                  Requests with the same URL and method inside this time window may be merged.
+                </div>
               </div>
             </div>
 
             <label
               htmlFor="settings-prompt-label"
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: 12,
-                padding: '14px 16px',
-                background: 'var(--bg3)',
-                border: '1px solid var(--border)',
-                borderRadius: 10,
-                marginBottom: 18,
-                cursor: 'pointer',
-              }}
+              className="settings-toggle-card"
             >
               <input
                 id="settings-prompt-label"
                 type="checkbox"
                 checked={promptScreenshotLabel}
                 onChange={(event) => setPromptScreenshotLabel(event.target.checked)}
-                style={{ marginTop: 3 }}
+                className="settings-toggle-checkbox"
               />
-              <span>
-                <span style={{ display: 'block', fontWeight: 600 }}>
-                  Prompt for screenshot labels
-                </span>
-                <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+              <span className="settings-toggle-copy">
+                <span className="settings-toggle-title">Prompt for screenshot labels</span>
+                <span className="settings-toggle-desc">
                   When enabled, screenshot checkpoints ask for an optional label. When disabled, screenshot checkpoints are saved without labels.
                 </span>
               </span>
             </label>
 
+            <label
+              htmlFor="settings-dynamic-binding-enabled"
+              className="settings-toggle-card"
+            >
+              <input
+                id="settings-dynamic-binding-enabled"
+                type="checkbox"
+                checked={dynamicBindingEnabled}
+                onChange={(event) => setDynamicBindingEnabled(event.target.checked)}
+                className="settings-toggle-checkbox"
+              />
+              <span className="settings-toggle-copy">
+                <span className="settings-toggle-title">Enable dynamic bindings</span>
+                <span className="settings-toggle-desc">
+                  When enabled, dynamic input binding tools are shown in popup and workflow details, and playback uses dynamic values.
+                </span>
+              </span>
+            </label>
+
             {feedback.message && (
-              <div
-                style={{
-                  marginBottom: 18,
-                  color:
-                    feedback.type === 'error'
-                      ? 'var(--red)'
-                      : 'var(--green)',
-                  fontSize: 14,
-                }}
-              >
+              <div className={`settings-feedback ${feedback.type === 'error' ? 'error' : 'success'}`}>
                 {feedback.message}
               </div>
             )}
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div className="settings-actions">
               <button
                 type="submit"
                 className="btn btn-primary"

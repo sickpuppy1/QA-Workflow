@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getRequestSession } from '@/lib/auth'
-import { createWorkflowRecord, listWorkflowSummariesForUser } from '@/lib/data'
+import {
+  createWorkflowRecord,
+  listWorkflowSummariesForUser,
+  normalizeWorkflowDynamicInputs,
+} from '@/lib/data'
 
 interface CheckpointInput {
   checkpointId?: string | null
@@ -154,10 +158,11 @@ export async function POST(req: NextRequest) {
     name?: string
     recordedAt?: string
     events?: unknown
+    dynamicInputs?: unknown
     screenshots?: Record<string, unknown> | null
     checkpoints?: unknown
   }
-  const { name, recordedAt, events, screenshots, checkpoints } = body
+  const { name, recordedAt, events, dynamicInputs, screenshots, checkpoints } = body
   const normalizedEvents = normalizeEvents(
     Array.isArray(events) ? events : [],
     Array.isArray(checkpoints) ? checkpoints.filter(isCheckpointInput) : []
@@ -193,6 +198,7 @@ export async function POST(req: NextRequest) {
     name,
     recordedAt: recordedAt ? new Date(recordedAt) : new Date(),
     events: normalizedEvents,
+    dynamicInputs: normalizeWorkflowDynamicInputs(dynamicInputs),
     screenshots: screenshotData,
   })
 

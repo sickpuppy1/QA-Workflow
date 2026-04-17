@@ -29,33 +29,33 @@ const C = {
 // ─── Checkpoint data ──────────────────────────────────────────────────────────
 const CHECKPOINTS = [
   {
-    id: 1, label: 'Cart Add',
-    consoleLogs: ['[INFO] addToCart() → SKU-8821', '[DEBUG] state.cart = {items:1, total:49.99}'],
-    network: { method: 'POST', url: '/api/cart/add', status: 200, payload: '{"sku":"SKU-8821","qty":1}' },
+    id: 1, label: 'Data Scrape',
+    consoleLogs: ['[INFO] extractTable() → 142 rows', '[DEBUG] state.data = {items:142, format:"csv"}'],
+    network: { method: 'GET', url: '/api/internal/leads', status: 200, payload: '{"status":"ok","rows":142}' },
     color: C.cyan,
     accent: 'rgba(6,182,212,0.12)',
     preview: { bg: '#0f1922', dots: ['#06b6d4','#0e7490','#164e63'] },
   },
   {
-    id: 2, label: 'Address Form',
-    consoleLogs: ['[INFO] validateAddress() passed', '[WARN] postcode format: US-5-digit'],
-    network: { method: 'GET', url: '/api/address/validate', status: 200, payload: '{"valid":true,"region":"CA"}' },
+    id: 2, label: 'Bulk Update',
+    consoleLogs: ['[INFO] fillForm() completed', '[WARN] date format: YYYY-MM-DD'],
+    network: { method: 'POST', url: '/api/crm/update', status: 200, payload: '{"updated":true,"records":142}' },
     color: C.violetL,
     accent: 'rgba(124,58,237,0.12)',
     preview: { bg: '#130f1f', dots: ['#7c3aed','#5b21b6','#4c1d95'] },
   },
   {
-    id: 3, label: 'Payment',
-    consoleLogs: ['[INFO] Stripe.confirmPayment() called', '[DEBUG] intent.status = "succeeded"'],
-    network: { method: 'POST', url: '/api/checkout/confirm', status: 200, payload: '{"status":"succeeded","id":"pi_3Ox"}' },
+    id: 3, label: 'System Sync',
+    consoleLogs: ['[INFO] triggerWebhook() called', '[DEBUG] sync.status = "succeeded"'],
+    network: { method: 'POST', url: '/api/sync/execute', status: 200, payload: '{"status":"succeeded","id":"sync_job_9"}' },
     color: C.green,
     accent: 'rgba(34,197,94,0.12)',
     preview: { bg: '#0a1a11', dots: ['#22c55e','#16a34a','#166534'] },
   },
   {
-    id: 4, label: 'Confirmation',
-    consoleLogs: ['[INFO] orderCreated: ORD-9920', '[INFO] emailSent → user@acme.com'],
-    network: { method: 'POST', url: '/api/orders', status: 201, payload: '{"orderId":"ORD-9920","eta":"2 days"}' },
+    id: 4, label: 'Export Report',
+    consoleLogs: ['[INFO] reportGenerated: REP-9920', '[INFO] fileSaved → local/disk'],
+    network: { method: 'GET', url: '/api/reports/download', status: 201, payload: '{"reportId":"REP-9920","size":"2.4MB"}' },
     color: C.yellow,
     accent: 'rgba(234,179,8,0.12)',
     preview: { bg: '#1a1709', dots: ['#eab308','#ca8a04','#a16207'] },
@@ -492,22 +492,42 @@ export default function LandingPage() {
         .cp-card.active { border-color: var(--cp-color); box-shadow: 0 0 0 1px var(--cp-color), 0 8px 32px rgba(0,0,0,0.4); }
         .cp-card:hover { transform: translateY(-2px); }
         .cp-thumb {
-          height: 72px;
-          border-radius: 8px;
-          margin-bottom: 10px;
-          position: relative;
+          height: 120px;
+          border-radius: 6px;
+          border: 1px solid rgba(255,255,255,0.1);
+          margin-bottom: 14px;
+          display: flex; flex-direction: column;
           overflow: hidden;
-          display: flex; align-items: center; justify-content: center;
-          gap: 6px;
+          position: relative;
+          background: #0f1117;
+          box-shadow: 0 8px 16px rgba(0,0,0,0.5);
         }
-        .cp-thumb-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .mini-dlg-header {
+          height: 20px; background: #1a1d27; border-bottom: 1px solid rgba(255,255,255,0.1);
+          display: flex; align-items: center; justify-content: space-between; padding: 0 6px;
+        }
+        .mini-title { font-size: 8px; color: #e5e7eb; font-weight: 600; font-family: 'Syne', sans-serif;}
+        .mini-badge { font-size: 7px; background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 8px; color: #8b8fa8; }
+        .mini-dlg-body { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .mini-row {
+          display: flex; gap: 4px; padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); align-items: center;
+          font-family: 'JetBrains Mono', monospace; font-size: 7px; color: #e5e7eb;
+        }
+        .mini-row.selected { background: rgba(99,102,241,0.15); border-left: 2px solid #6366f1; padding-left: 4px; }
+        .mini-tag { font-size: 6px; font-weight: 700; padding: 1px 3px; border-radius: 2px; }
+        .mini-dlg-footer { height: 26px; background: #1f2937; border-top: 1px solid #374151; display: flex; align-items: center; padding: 0 6px; gap: 4px; }
+        .mini-input { flex: 1; height: 14px; background: #242736; border: 1px solid rgba(255,255,255,0.1); border-radius: 3px; padding-left: 4px; display: flex; align-items: center; }
+        .mini-input-placeholder { font-size: 6px; color: #9ca3af; }
+        .mini-btn { padding: 0 6px; height: 14px; background: #6366f1; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 6px; font-weight: 600; color: #fff; }
+        
+        .cp-meta-wrap { display: flex; flex-direction: column; gap: 3px; }
         .cp-num {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 10px; font-weight: 500;
-          color: ${C.muted};
-          margin-bottom: 4px;
+          font-size: 10px; font-weight: 600;
+          color: var(--cp-color);
+          text-transform: uppercase;
         }
-        .cp-label { font-size: 13px; font-weight: 600; color: ${C.text}; }
+        .cp-label { font-size: 15px; font-weight: 700; color: ${C.text}; letter-spacing: -0.3px; }
 
         .cp-detail {
           border-radius: 14px;
@@ -804,10 +824,10 @@ export default function LandingPage() {
                   </div>
                   <div className="hud-event-list">
                     {[
-                      { type: 'click',  sel: '#checkout-btn',    color: C.cyan },
-                      { type: 'input',  sel: '#card-number',      color: C.violetL },
-                      { type: 'nav',    sel: '/checkout/confirm', color: C.yellow },
-                      { type: 'click',  sel: '#confirm-payment',  color: C.cyan },
+                      { type: 'extract', sel: '#lead-table tr',    color: C.cyan },
+                      { type: 'input',  sel: '#bulk-update-form', color: C.violetL },
+                      { type: 'nav',    sel: '/admin/crm/sync',   color: C.yellow },
+                      { type: 'click',  sel: '#confirm-sync',     color: C.cyan },
                     ].map((ev, i) => (
                       <div key={i} className="hud-event">
                         <span className="hud-event-type" style={{ background: `${ev.color}22`, color: ev.color }}>{ev.type}</span>
@@ -828,12 +848,12 @@ export default function LandingPage() {
                 </div>
                 <div className="hud-panel-body">
                   <div style={{ marginBottom: 10, fontSize: 11, color: C.muted, fontFamily: 'JetBrains Mono' }}>
-                    checkout-flow-v3 · 3 runs
+                    lead-enrichment-v2 · 3 runs
                   </div>
                   {[
-                    { name: 'Run #3 — Staging',    checkpoints: 4, status: 'run',  diff: '▲ Now' },
-                    { name: 'Run #2 — Production', checkpoints: 4, status: 'pass', diff: '0 diffs' },
-                    { name: 'Run #1 — Staging',    checkpoints: 3, status: 'fail', diff: '2 diffs' },
+                    { name: 'Run #3 — Daily Sync',    checkpoints: 4, status: 'run',  diff: '▲ Now' },
+                    { name: 'Run #2 — Daily Sync',    checkpoints: 4, status: 'pass', diff: '0 diffs' },
+                    { name: 'Run #1 — Daily Sync',    checkpoints: 3, status: 'fail', diff: '2 diffs' },
                   ].map((r, i) => (
                     <div key={i} className="dash-run-row">
                       <div>
@@ -884,22 +904,59 @@ export default function LandingPage() {
                   viewport={{ once: true }} transition={{ duration: 0.5, delay: i * 0.08 }}
                   whileHover={{ scale: 1.02 }}
                 >
-                  <div className="cp-thumb" style={{ background: cp.preview.bg }}>
-                    {cp.preview.dots.map((d, di) => (
-                      <div key={di} className="cp-thumb-dot" style={{ background: d, opacity: 0.85 + di * 0.05 }} />
-                    ))}
+                  <div className="cp-thumb" style={{ background: '#0f1117' }}>
+                    <div className="mini-dlg-header">
+                      <div className="mini-title">{(i % 2 === 0) ? 'Network Calls' : 'Console Logs'}</div>
+                      <div className="mini-badge">4</div>
+                    </div>
+                    <div className="mini-dlg-body">
+                      {(i % 2 === 0) ? (
+                        <>
+                          <div className="mini-row">
+                             <span className="mini-tag" style={{ color: C.cyan, background: C.cyan+'22' }}>GET</span>
+                             <span style={{flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>/api/auth/session</span>
+                             <span style={{color: C.green}}>200</span>
+                          </div>
+                          <div className="mini-row selected">
+                             <span className="mini-tag" style={{ color: cp.color, background: cp.color+'22' }}>{cp.network.method}</span>
+                             <span style={{flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{cp.network.url}</span>
+                             <span style={{color: cp.network.status >= 400 ? '#ef4444' : '#10b981'}}>{cp.network.status}</span>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="mini-row">
+                             <span className="mini-tag" style={{ color: C.yellow, background: C.yellow+'22' }}>WARN</span>
+                             <span style={{flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', color: C.yellow}}>depreciation warning</span>
+                          </div>
+                          <div className="mini-row selected">
+                             <span className="mini-tag" style={{ color: cp.color, background: cp.color+'22' }}>INFO</span>
+                             <span style={{flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', color: cp.color}}>{cp.consoleLogs[0].replace('[INFO] ', '')}</span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <div className="mini-dlg-footer">
+                      <div className="mini-input">
+                        <span className="mini-input-placeholder">CP_{cp.id.toString().padStart(2, '0')} - {cp.label}</span>
+                      </div>
+                      <div className="mini-btn">Add</div>
+                    </div>
                     {activeCP === i && (
                       <motion.div
                         style={{
-                          position: 'absolute', inset: 0, borderRadius: 8,
-                          background: `radial-gradient(circle, ${cp.color}22, transparent)`,
+                          position: 'absolute', inset: 0,
+                          background: `radial-gradient(circle at center, ${cp.color}11, transparent)`,
+                          pointerEvents: 'none'
                         }}
                         initial={{ opacity: 0 }} animate={{ opacity: 1 }}
                       />
                     )}
                   </div>
-                  <div className="cp-num">CP_{cp.id.toString().padStart(2, '0')}</div>
-                  <div className="cp-label">{cp.label}</div>
+                  <div className="cp-meta-wrap">
+                    <div className="cp-num">CP_{cp.id.toString().padStart(2, '0')}</div>
+                    <div className="cp-label">{cp.label}</div>
+                  </div>
                   <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <div style={{ width: 6, height: 6, borderRadius: '50%', background: cp.color }} />
                     <span style={{ fontSize: 10, color: C.muted, fontFamily: 'JetBrains Mono' }}>
@@ -1045,16 +1102,16 @@ export default function LandingPage() {
                   <div className="queue-header">
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <Layers size={15} color={C.violetL} />
-                      <span style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: 14 }}>Regression Suite</span>
+                      <span style={{ fontFamily: 'Syne', fontWeight: 700, fontSize: 14 }}>Automation Queue</span>
                     </div>
                     <span className="status-chip status-run">3 / 5 Running</span>
                   </div>
                   {[
-                    { name: 'Checkout Flow', env: 'Staging', loops: 3,  status: 'pass' },
-                    { name: 'Login Flow',    env: 'Prod',    loops: 1,  status: 'pass' },
-                    { name: 'Cart Add',      env: 'Staging', loops: 5,  status: 'run'  },
-                    { name: 'Search Filter', env: 'UAT',     loops: 2,  status: 'run'  },
-                    { name: 'Form Submit',   env: 'Prod',    loops: 1,  status: 'run'  },
+                    { name: 'Lead Enrichment', env: 'Desktop', loops: 30,  status: 'pass' },
+                    { name: 'Invoice Generator', env: 'Web',    loops: 15,  status: 'pass' },
+                    { name: 'Table Extraction', env: 'Web',    loops: 50,  status: 'run'  },
+                    { name: 'CRM Bulk Update', env: 'Desktop', loops: 20,  status: 'run'  },
+                    { name: 'Report Export',   env: 'Web',    loops: 5,  status: 'run'  },
                   ].map((item, i) => (
                     <div key={i} className="queue-item">
                       <div className="queue-item-left">

@@ -33,6 +33,10 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
 
   async function handleLogout() {
     await fetch('/api/auth/logout', { method: 'POST' })
+    // Signal the auth-bridge content script so the extension popup logs out live.
+    try {
+      window.postMessage({ __wfSrc: '__wf_dashboard_auth__', type: 'CLEAR_TOKEN' }, window.location.origin)
+    } catch (_) {}
     router.push('/login')
     router.refresh()
   }

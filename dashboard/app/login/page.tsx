@@ -37,12 +37,25 @@ export default function LoginPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       })
+      const data = await res.json()
       if (res.ok) {
+        // Broadcast the auth token to any installed extension via the auth-bridge
+        // content script (content/auth-bridge.js). The bridge validates origin and
+        // forwards this to the service worker which persists and broadcasts it to
+        // the popup, enabling live auth-state sync without a popup restart.
+        try {
+          window.postMessage({
+            __wfSrc: '__wf_dashboard_auth__',
+            type: 'AUTH_TOKEN',
+            token: data.token || null,
+            userId: data.user?.userId || null,
+            email: data.user?.email || email,
+          }, window.location.origin)
+        } catch (_) {}
         router.push('/')
         router.refresh()
       } else {
-        const d = await res.json()
-        setError(d.error || (tab === 'signin' ? 'Login failed' : 'Signup failed'))
+        setError(data?.error || (tab === 'signin' ? 'Login failed' : 'Signup failed'))
       }
     } catch {
       setError('Network error — is the server running?')

@@ -20,8 +20,7 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname
   const isApiRoute = path.startsWith('/api/')
 
-  // Root login screen is open to all
-  if (path === '/' || path === '/login') {
+  if (path === '/' || path === '/login' || path === '/landing' || path === '/uninstall') {
     return NextResponse.next()
   }
 

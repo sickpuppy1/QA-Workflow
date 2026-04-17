@@ -990,6 +990,27 @@ try {
   });
 } catch (_) {}
 
+// ─── Lifecycle: install / uninstall ──────────────────────────────────────────
+
+/**
+ * Onboarding / offboarding hooks.
+ *
+ * Strategy:
+ * On first install, open the welcome page in a new tab so new users are
+ * immediately guided through setup.  The uninstall URL is registered once
+ * here; Chrome opens it automatically when the user removes the extension.
+ */
+try {
+  chrome.runtime.onInstalled.addListener((details) => {
+    // Register the uninstall survey URL immediately — regardless of reason.
+    chrome.runtime.setUninstallURL(`${DASHBOARD_URL}/uninstall`);
+
+    if (details.reason === 'install') {
+      // Welcome page has been removed.
+    }
+  });
+} catch (_) {}
+
 // ─── Message routing ──────────────────────────────────────────────────────────
 
 /**
@@ -1230,6 +1251,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "EXPORT_WORKFLOW":
       handleExportWorkflow(sendResponse);
       return true;
+
+    // ── Auth token handshake (from auth-bridge.js content script) ──────────
+
+    case "STORE_AUTH_TOKEN":
+      // Persist the JWT + user metadata forwarded from the dashboard login page.
+      chrome.storage.local.set({
+        dashboardAuthToken: msg.token || null,
+        dashboardAuthUserId: msg.userId || null,
+        dashboardAuthEmail: msg.email || null,
+      }).then(() => {
+        // Broadcast live update so the popup reflects the new auth state
+        // immediately without requiring the user to close and reopen it.
+        broadcastToPopup({
+          type: "AUTH_STATE_CHANGED",
+          isSignedIn: true,
+          token: msg.token || null,
+          userId: msg.userId || null,
+          email: msg.email || null,
+        });
+      }).catch(() => {});
+      sendResponse({ ok: true });
+      return false;
+
+    case "CLEAR_AUTH_TOKEN":
+      // Mirror dashboard logout in the extension.
+      chrome.storage.local.remove([
+        'dashboardAuthToken',
+        'dashboardAuthUserId',
+        'dashboardAuthEmail',
+      ]).then(() => {
+        broadcastToPopup({
+          type: "AUTH_STATE_CHANGED",
+          isSignedIn: false,
+          token: null,
+          userId: null,
+          email: null,
+        });
+      }).catch(() => {});
+      sendResponse({ ok: true });
+      return false;
 
     default:
       sendResponse({ error: "Unknown message type" });

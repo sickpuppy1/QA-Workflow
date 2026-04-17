@@ -47,6 +47,13 @@
       "run_at": "document_start",
       "world": "MAIN",
       "all_frames": true
+    },
+    {
+      "matches": ["http://localhost:3000/*"],
+      "js": ["content/auth-bridge.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": false
     }
   ],
   "web_accessible_resources": [

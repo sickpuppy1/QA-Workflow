@@ -1611,6 +1611,27 @@ chrome.runtime.onMessage.addListener((msg) => {
       showPanel("idle");
       break;
 
+    case "AUTH_STATE_CHANGED":
+      // Fired by the service worker after auth-bridge.js forwards a
+      // login/logout event from the dashboard. Update local auth state and
+      // re-render without requiring a popup restart.
+      if (msg.isSignedIn) {
+        dashboardAuth = {
+          token: msg.token || null,
+          userId: msg.userId || null,
+          email: msg.email || null,
+        };
+        renderAuthState();
+        resetDashboardWorkflowState();
+        syncUserSettingsFromDashboard().catch(() => {});
+        showToast('Signed in via dashboard — ready to record.', 'success');
+      } else {
+        clearDashboardAuth().then(() => {
+          showToast('Signed out from dashboard.', 'success');
+        });
+      }
+      break;
+
     default:
       break;
   }

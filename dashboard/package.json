@@ -16,6 +16,8 @@
   "dependencies": {
     "@types/bcryptjs": "^2.4.6",
     "bcryptjs": "^3.0.3",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^1.8.0",
     "mongodb": "^6.20.0",
     "next": "16.2.0",
     "react": "19.2.4",

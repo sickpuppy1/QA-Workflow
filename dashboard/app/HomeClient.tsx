@@ -30,6 +30,10 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
   /** Ends the session via the logout API and sends the user to `/login`. */
   async function handleLogout() {
     await fetch('/api/auth/logout', { method: 'POST' })
+    // Signal the auth-bridge content script so the extension popup logs out live.
+    try {
+      window.postMessage({ __wfSrc: '__wf_dashboard_auth__', type: 'CLEAR_TOKEN' }, window.location.origin)
+    } catch (_) {}
     router.push('/login')
   }
 

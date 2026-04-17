@@ -822,35 +822,7 @@ export default function WorkflowDetailClient({
             </>
           )}
 
-          {/* Recording screenshots */}
-          <div className="section-title">Recording Checkpoints</div>
-          {workflow.screenshots.length === 0 ? (
-            <div className="empty-state" style={{ padding: '32px 20px' }}>
-              <svg className="empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: 12, opacity: 0.2 }}>
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                <circle cx="8.5" cy="8.5" r="1.5" />
-                <polyline points="21 15 16 10 5 21" />
-              </svg>
-              <div className="empty-title">No checkpoints yet</div>
-              <div className="empty-desc">Take screenshot checkpoints while recording to see them here.</div>
-            </div>
-          ) : (
-            <div className="screenshot-strip">
-              {workflow.screenshots.map(s => (
-                <div
-                  key={s.id}
-                  id={`recording-screenshot-${s.index}`}
-                  className="screenshot-thumb"
-                  onClick={() => setSelectedImg(s)}
-                >
-                  <img src={s.dataUrl} alt={s.label || `Checkpoint ${s.index + 1}`} />
-                  <div className="screenshot-thumb-label">{s.label || `Checkpoint ${s.index + 1}`}</div>
-                </div>
-              ))}
-            </div>
-          )}
 
-          <hr className="divider" />
 
           {/* Checkpoint timeline */}
           <div className="section-title" style={{ marginBottom: 14 }}>Checkpoint Timeline</div>
@@ -864,28 +836,25 @@ export default function WorkflowDetailClient({
               <div className="empty-desc">Add screenshot, console, or network checkpoints while recording to see them here.</div>
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
+            <div style={{ position: 'relative', paddingLeft: 8, marginBottom: 28, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {/* Vertical timeline track */}
+              <div style={{ position: 'absolute', left: 16, top: 12, bottom: 12, width: 2, background: 'var(--border)', borderRadius: 2, zIndex: 0 }} />
+              
               {checkpointEvents.map((cp, i) => {
                 const isScreenshot = cp.type === 'checkpoint'
                 const isConsole    = cp.type === 'console_checkpoint'
                 const isNetwork    = cp.type === 'network_checkpoint'
 
                 const accentColor = isScreenshot ? 'var(--blue, #3b82f6)'
-                  : isConsole    ? '#7c3aed'
-                  : '#0891b2'
+                  : isConsole    ? '#a78bfa'
+                  : '#22d3ee'
 
-                const typeLabel = isScreenshot ? 'Screenshot' : isConsole ? 'Console' : 'Network'
-
-                // Find the thumbnail for screenshot checkpoints
                 let thumb: Screenshot | undefined
                 if (isScreenshot) {
-                  // Re-derive per rendered list order
                   let screenshotCpIdx = 0
                   for (let j = 0; j <= i; j++) {
                     if (checkpointEvents[j].type === 'checkpoint') {
-                      if (j === i) {
-                        thumb = workflow.screenshots.find(s => s.index === screenshotCpIdx)
-                      }
+                      if (j === i) thumb = workflow.screenshots.find(s => s.index === screenshotCpIdx)
                       screenshotCpIdx++
                     }
                   }
@@ -895,89 +864,64 @@ export default function WorkflowDetailClient({
                   <div
                     key={i}
                     style={{
-                      display: 'flex', alignItems: 'flex-start', gap: 14,
-                      background: 'var(--bg2, #111)', border: '1px solid var(--border)',
-                      borderLeft: `3px solid ${accentColor}`,
-                      borderRadius: 8, padding: '12px 16px',
+                      position: 'relative', display: 'flex', alignItems: 'center', gap: 14, zIndex: 1
                     }}
                   >
-                    {/* Index badge */}
+                    {/* Index Node */}
                     <div style={{
-                      minWidth: 28, height: 28, borderRadius: '50%',
-                      background: accentColor, color: '#fff',
+                      width: 18, height: 18, borderRadius: '50%',
+                      background: 'var(--bg)', border: `2px solid ${accentColor}`,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 11, fontWeight: 700, flexShrink: 0,
+                      fontSize: 9, fontWeight: 700, flexShrink: 0,
+                      fontFamily: 'JetBrains Mono, monospace', color: 'var(--text)'
                     }}>
                       {i + 1}
                     </div>
 
-                    {/* Content */}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                        <span style={{
-                          fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
-                          letterSpacing: '0.6px', color: accentColor,
-                        }}>{typeLabel}</span>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {cp.label}
-                        </span>
-                      </div>
-
-                      {isConsole && (
-                        <div style={{
-                          fontFamily: 'monospace', fontSize: 11,
-                          background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.2)',
-                          borderRadius: 4, padding: '4px 8px', color: '#a78bfa',
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        }}>
-                          {(cp as any).logMessage?.slice(0, 120) ?? ''}
-                        </div>
-                      )}
-
-                      {isNetwork && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          <span style={{
-                            fontFamily: 'monospace', fontSize: 10, fontWeight: 700,
-                            background: 'rgba(8,145,178,0.15)', color: '#22d3ee',
-                            border: '1px solid rgba(8,145,178,0.3)',
-                            borderRadius: 3, padding: '2px 6px',
-                          }}>
-                            {(cp as any).networkMethod}
+                    {/* Content Line */}
+                    <div style={{
+                      flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 12,
+                      background: 'linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0))',
+                      border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px',
+                    }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>
+                        {cp.label}
+                      </span>
+                      
+                      <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
+                        {isConsole && (
+                          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: '#a78bfa', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            <span style={{ opacity: 0.5 }}>{'>_ '}</span>
+                            {(cp as any).logMessage?.replace(/^\[.*?\]\s*/, '')}
                           </span>
-                          <span style={{
-                            fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)',
-                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
-                          }}>
-                            {(cp as any).networkUrl?.replace(/^https?:\/\/[^/]+/, '') ?? (cp as any).networkUrl}
-                          </span>
-                          {(cp as any).networkStatus != null && (
-                            <span style={{
-                              fontSize: 10, fontWeight: 700, borderRadius: 3, padding: '2px 6px',
-                              background: (cp as any).networkStatus >= 200 && (cp as any).networkStatus < 300
-                                ? 'rgba(22,163,74,0.15)' : 'rgba(220,38,38,0.15)',
-                              color: (cp as any).networkStatus >= 200 && (cp as any).networkStatus < 300
-                                ? '#4ade80' : '#f87171',
-                              border: `1px solid ${(cp as any).networkStatus >= 200 && (cp as any).networkStatus < 300
-                                ? 'rgba(22,163,74,0.3)' : 'rgba(220,38,38,0.3)'}`,
-                            }}>
-                              {(cp as any).networkStatus}
+                        )}
+
+                        {isNetwork && (
+                          <>
+                            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, fontWeight: 700, color: '#22d3ee', background: 'rgba(8,145,178,0.15)', padding: '2px 5px', borderRadius: 3 }}>
+                              {(cp as any).networkMethod}
                             </span>
-                          )}
-                        </div>
-                      )}
-
-                      {isScreenshot && thumb && (
-                        <img
-                          src={thumb.dataUrl}
-                          alt={cp.label}
-                          onClick={() => setSelectedImg(thumb!)}
-                          style={{
-                            marginTop: 8, height: 72, borderRadius: 6,
-                            border: '1px solid var(--border)', cursor: 'pointer',
-                            objectFit: 'cover', display: 'block',
-                          }}
-                        />
-                      )}
+                            {(cp as any).networkStatus != null && (
+                              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, fontWeight: 700, padding: '2px 5px', borderRadius: 3, background: (cp as any).networkStatus >= 200 && (cp as any).networkStatus < 300 ? 'rgba(22,163,74,0.15)' : 'rgba(220,38,38,0.15)', color: (cp as any).networkStatus >= 200 && (cp as any).networkStatus < 300 ? '#4ade80' : '#f87171' }}>
+                                {(cp as any).networkStatus}
+                              </span>
+                            )}
+                            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {(cp as any).networkUrl?.replace(/^https?:\/\/[^/]+/, '')}
+                            </span>
+                          </>
+                        )}
+                        
+                        {isScreenshot && thumb && (
+                           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, opacity: 0.8, cursor: 'pointer', background: 'rgba(59,130,246,0.1)', padding: '4px 8px', borderRadius: 4, border: '1px solid rgba(59,130,246,0.2)' }} onClick={() => setSelectedImg(thumb!)}
+                             onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgba(59,130,246,0.2)' }}
+                             onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.8'; e.currentTarget.style.background = 'rgba(59,130,246,0.1)' }}
+                           >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 9, fontWeight: 700, color: 'var(--blue)' }}>VIEW</span>
+                           </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )

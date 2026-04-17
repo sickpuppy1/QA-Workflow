@@ -757,7 +757,7 @@ export default function LandingPage() {
               initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7, delay: 0.2 }}
             >
               The first no-code recorder that turns web interactions into{' '}
-              <strong>replayable, evidence-backed QA workflows</strong> in seconds.
+              <strong>replayable, evidence-backed automated workflows</strong> in seconds.
             </motion.p>
 
             <motion.div
@@ -824,7 +824,7 @@ export default function LandingPage() {
                   <div className="hud-dot" style={{ background: '#ff5f57' }} />
                   <div className="hud-dot" style={{ background: '#ffbd2e' }} />
                   <div className="hud-dot" style={{ background: '#27c93f' }} />
-                  <span style={{ marginLeft: 6 }}>QA Dashboard — Live Runs</span>
+                  <span style={{ marginLeft: 6 }}>Workflow Automator — Live Runs</span>
                 </div>
                 <div className="hud-panel-body">
                   <div style={{ marginBottom: 10, fontSize: 11, color: C.muted, fontFamily: 'JetBrains Mono' }}>

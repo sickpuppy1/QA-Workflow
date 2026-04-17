@@ -1,5 +1,6 @@
 {
-  "name": "dashboard",
+  "name": "workflow-automator-dashboard",
+  "description": "Automate repetitive tasks, auto-fill forms, and record web workflows with a no-code macro recorder.",
   "version": "0.1.0",
   "private": true,
   "engines": {

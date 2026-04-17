@@ -7,7 +7,7 @@ import bcrypt from 'bcryptjs'
 import { createUserRecord, findUserByEmail } from './data'
 import { verifySessionToken, createSessionToken, Session } from './jwt'
 
-const SESSION_COOKIE = 'qa_session'
+const SESSION_COOKIE = 'wa_session'
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
 
 function getBearerToken(headers: Headers) {

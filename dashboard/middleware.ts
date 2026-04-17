@@ -31,7 +31,7 @@ export async function middleware(request: NextRequest) {
   if (authHeader && authHeader.toLowerCase().startsWith('bearer ')) {
     token = authHeader.split(' ')[1]
   } else {
-    token = request.cookies.get('qa_session')?.value
+    token = request.cookies.get('wa_session')?.value
   }
 
   // Verify

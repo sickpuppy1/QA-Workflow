@@ -753,7 +753,7 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
         <div className="sidebar-logo">
           <img src="/icon.svg" alt="Logo" className="sidebar-logo-icon-img" />
           <div>
-            <div className="sidebar-logo-text">QA Dashboard</div>
+            <div className="sidebar-logo-text">Workflow Automator</div>
             <div className="sidebar-logo-sub">Workflow Studio</div>
           </div>
         </div>

@@ -1,12 +1,12 @@
-# Workflow Recorder & Player
+# Workflow Automator: Macro Recorder, Record & Replay
 
-A Chrome extension that records, replays, and screenshots workflows across any web app.
+Automate repetitive tasks, auto-fill forms, and record web workflows with a no-code macro recorder. A Chrome extension that records, replays, and screenshots workflows across any web app — no coding required.
 
 ## Installation
 
 1. Open Chrome and navigate to `chrome://extensions`
 2. Enable **Developer mode** (top-right toggle)
-3. Click **Load unpacked** and select the `test-ext` folder
+3. Click **Load unpacked** and select the `workflow-automator` folder
 4. The extension icon appears in your toolbar
 
 ## How to Use
@@ -17,7 +17,7 @@ A Chrome extension that records, replays, and screenshots workflows across any w
 2. Interact with any web app (clicks, scrolls, typing, tab switches are all captured)
 3. A red **REC** badge appears in the top-right of every page while recording
 4. Click **Take Screenshot Checkpoint** in the popup anytime you want a saved screenshot
-5. Click **Stop & Export Recording** → `workflow.json` + `checkpoint_N.png` files are downloaded to `Downloads/workflow-exports/`
+5. Click **Stop & Save** → the workflow is saved to the Dashboard automatically
 
 ### Playing Back a Workflow
 
@@ -34,7 +34,7 @@ All exports land in `Downloads/workflow-exports/<name>_<timestamp>/`:
 
 ```
 workflow-exports/
-└── pos-punch-order_2026-03-17T10-30-00/
+└── my-workflow_2026-03-17T10-30-00/
     ├── workflow.json          ← Full event log (replayable)
     ├── checkpoint_0.png       ← Screenshot at checkpoint 0
     ├── checkpoint_1.png       ← Screenshot at checkpoint 1
@@ -61,7 +61,7 @@ workflow-exports/
 ## File Structure
 
 ```
-test-ext/
+workflow-automator/
 ├── manifest.json                  Chrome MV3 manifest
 ├── background/
 │   └── service-worker.js          Orchestration: record, play, screenshot, tab tracking

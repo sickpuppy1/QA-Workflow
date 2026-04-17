@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Workflow Recorder & Player",
+  "name": "Workflow Automator: Macro Recorder, Record & Replay",
   "version": "1.0.0",
-  "description": "Record, replay, and screenshot workflows across any web app.",
+  "description": "Automate repetitive tasks, auto-fill forms, and record web workflows with a no-code macro recorder.",
   "permissions": [
     "tabs",
     "activeTab",
@@ -27,7 +27,7 @@
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     },
-    "default_title": "Workflow Recorder"
+    "default_title": "Workflow Automator"
   },
   "icons": {
     "16": "icons/icon16.png",

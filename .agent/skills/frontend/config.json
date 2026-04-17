@@ -1,0 +1,7 @@
+{
+  "name": "frontend",
+  "version": "1.0.0",
+  "description": "Frontend development and UI/UX skill for agentic workflows.",
+  "entry": "instruction.md",
+  "tools": []
+}

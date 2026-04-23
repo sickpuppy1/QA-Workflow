@@ -4,6 +4,7 @@ import { motion } from 'framer-motion'
 import { Mail, MessageSquare, Send, Globe, ChevronLeft, MapPin } from 'lucide-react'
 import Link from 'next/link'
 import { useState } from 'react'
+import { SUPPORT_EMAIL, DISCORD_URL } from '@/../shared/dashboard-config'
 
 const C = {
   bg0:    'rgba(14,14,20,1)',
@@ -257,16 +258,16 @@ export default function ContactPage() {
                 <div className="icon-wrap"><Mail size={20} /></div>
                 <div>
                   <div className="info-label">Email Support</div>
-                  <div className="info-value">support@workflow-automator.io</div>
+                  <div className="info-value">{SUPPORT_EMAIL}</div>
                 </div>
               </div>
-              <div className="info-card">
+              <a href={DISCORD_URL} target="_blank" rel="noopener noreferrer" className="info-card" style={{ textDecoration: 'none' }}>
                 <div className="icon-wrap"><MessageSquare size={20} /></div>
                 <div>
                   <div className="info-label">Community</div>
                   <div className="info-value">Discord Server</div>
                 </div>
-              </div>
+              </a>
               <div className="info-card">
                 <div className="icon-wrap"><Globe size={20} /></div>
                 <div>

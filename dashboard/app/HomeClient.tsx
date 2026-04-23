@@ -3,6 +3,8 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState, useEffect } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
 
 interface Workflow {
   id: string
@@ -15,10 +17,13 @@ interface Props {
   workflows: Workflow[]
   stats: { workflows: number; runs: number; checkpoints: number }
   userEmail: string
+  currentPage: number
+  totalWorkflows: number
+  pageSize: number
 }
 
 /** Logged-in home: workflow list, stats, and sidebar navigation. */
-export default function HomeClient({ workflows, stats, userEmail }: Props) {
+export default function HomeClient({ workflows, stats, userEmail, currentPage, totalWorkflows, pageSize }: Props) {
   const router = useRouter()
   const [mounted, setMounted] = useState(false)
   const [exportingIds, setExportingIds] = useState<Set<string>>(new Set())
@@ -231,8 +236,106 @@ export default function HomeClient({ workflows, stats, userEmail }: Props) {
               ))}
             </div>
           )}
+
+          {/* Pagination */}
+          {totalWorkflows > pageSize && (
+            <div className="pagination-wrap">
+              <div className="pagination-container">
+                <button
+                  className="pagination-btn"
+                  onClick={() => router.push(`/?page=${currentPage - 1}`)}
+                  disabled={currentPage <= 1}
+                >
+                  <ChevronLeft size={16} />
+                  <span>Previous</span>
+                </button>
+
+                <div className="pagination-info">
+                  <span className="current-page">{currentPage}</span>
+                  <span className="separator">/</span>
+                  <span className="total-pages">{Math.ceil(totalWorkflows / pageSize)}</span>
+                </div>
+
+                <button
+                  className="pagination-btn"
+                  onClick={() => router.push(`/?page=${currentPage + 1}`)}
+                  disabled={currentPage >= Math.ceil(totalWorkflows / pageSize)}
+                >
+                  <span>Next</span>
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </main>
+
+      <style jsx global>{`
+        .pagination-wrap {
+          margin-top: 48px;
+          display: flex;
+          justify-content: center;
+          padding-bottom: 24px;
+        }
+        .pagination-container {
+          display: flex;
+          align-items: center;
+          gap: 16px;
+          background: rgba(255, 255, 255, 0.03);
+          backdrop-filter: blur(12px);
+          padding: 8px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        .pagination-btn {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          background: none;
+          border: none;
+          color: var(--text-muted);
+          font-size: 13px;
+          font-weight: 500;
+          cursor: pointer;
+          padding: 8px 16px;
+          border-radius: 999px;
+          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .pagination-btn:hover:not(:disabled) {
+          background: rgba(124, 58, 237, 0.15);
+          color: var(--accent-light);
+          transform: translateY(-1px);
+        }
+        .pagination-btn:active:not(:disabled) {
+          transform: translateY(0);
+        }
+        .pagination-btn:disabled {
+          opacity: 0.3;
+          cursor: not-allowed;
+        }
+        .pagination-info {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-family: 'JetBrains Mono', monospace;
+          background: rgba(255, 255, 255, 0.05);
+          padding: 6px 14px;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.05);
+          font-size: 13px;
+        }
+        .current-page {
+          color: var(--accent-light);
+          font-weight: 700;
+        }
+        .separator {
+          color: rgba(255, 255, 255, 0.2);
+        }
+        .total-pages {
+          color: var(--text-muted);
+        }
+      `}</style>
     </div>
   )
 }

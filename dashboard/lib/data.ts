@@ -548,7 +548,7 @@ export async function listWorkflowSummaries() {
   }))
 }
 
-export async function listWorkflowSummariesForUser(userId: string) {
+export async function listWorkflowSummariesForUser(userId: string, skip = 0, limit = 30) {
   const { workflows } = await getCollections()
   const docs = await workflows.aggregate<{
     _id: string
@@ -559,6 +559,8 @@ export async function listWorkflowSummariesForUser(userId: string) {
   }>([
     { $match: { userId } },
     { $sort: { recordedAt: -1 } },
+    { $skip: skip },
+    { $limit: limit },
     {
       $lookup: {
         from: 'recording_screenshots',
@@ -610,6 +612,11 @@ export async function listWorkflowSummariesForUser(userId: string) {
 export async function countWorkflows() {
   const { workflows } = await getCollections()
   return workflows.countDocuments()
+}
+
+export async function countWorkflowsForUser(userId: string) {
+  const { workflows } = await getCollections()
+  return workflows.countDocuments({ userId })
 }
 
 export async function countPlaybackRuns() {

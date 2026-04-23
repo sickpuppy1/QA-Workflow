@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getRequestSession } from '@/lib/auth'
 import { createRunRecord } from '@/lib/data'
+import {
+  readJsonBodyWithLimit,
+  RequestBodyLimitError,
+  RequestBodyParseError,
+} from '@/lib/request-body'
 
 interface RunCheckpointInput {
   label?: string | null
@@ -18,13 +23,23 @@ function asRunCheckpointInput(value: unknown): RunCheckpointInput {
 }
 
 // POST /api/runs — create a playback run with its checkpoints
+const MAX_BODY_BYTES = 10 * 1024 * 1024
+
 export async function POST(req: NextRequest) {
   const session = await getRequestSession(req)
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const body = await req.json() as {
+  const contentLength = req.headers.get('content-length')
+  if (contentLength !== null && Number(contentLength) > MAX_BODY_BYTES) {
+    return NextResponse.json(
+      { error: 'Payload Too Large — maximum upload size is 10 MB' },
+      { status: 413 },
+    )
+  }
+
+  let body: {
     workflowId?: string
     playedAt?: string
     checkpoints?: Record<string, unknown> | null
@@ -32,6 +47,20 @@ export async function POST(req: NextRequest) {
     failedEventIndex?: number | null
     failedEventType?: string | null
     failedEventSelector?: string | null
+  }
+  try {
+    body = await readJsonBodyWithLimit<typeof body>(req, MAX_BODY_BYTES)
+  } catch (error) {
+    if (error instanceof RequestBodyLimitError) {
+      return NextResponse.json(
+        { error: 'Payload Too Large — maximum upload size is 10 MB' },
+        { status: 413 },
+      )
+    }
+    if (error instanceof RequestBodyParseError) {
+      return NextResponse.json({ error: error.message }, { status: 400 })
+    }
+    throw error
   }
   const {
     workflowId,

@@ -1,10 +1,10 @@
+import { DASHBOARD_URL } from "../shared/dashboard-config.js";
+
 /**
  * Popup script — manages idle / recording / playing UI states and
  * communicates with the service worker.
  */
 
-// Dashboard URL — keep in sync with service-worker.js
-const DASHBOARD_URL = 'http://localhost:3000';
 const DASHBOARD_AUTH_STORAGE_KEYS = ['dashboardAuthToken', 'dashboardAuthUserId', 'dashboardAuthEmail'];
 const USER_SETTINGS_STORAGE_KEYS = ['playBufferSeconds', 'promptScreenshotLabel', 'networkMergeWindowMs', 'dynamicBindingEnabled'];
 const DEFAULT_USER_SETTINGS = {
@@ -112,6 +112,8 @@ let userSettings        = { ...DEFAULT_USER_SETTINGS };
 let workflowQueue       = [];     // array of parsed workflow JSONs to play sequentially
 let playScreenshots     = {};     // currently playing workflow's screenshots
 let playDynamicState    = null;   // live dynamic playback state pushed from SW
+
+const WORKFLOW_PERMISSION_ORIGINS = ['<all_urls>'];
 
 function renderCheckpointLabelMode() {
   btnCheckpoint.title = promptScreenshotLabelToggle.checked
@@ -248,13 +250,7 @@ async function syncUserSettingsFromDashboard() {
   }
 
   try {
-    const res = await dashboardFetch('/api/settings', { method: 'GET' }, true);
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data?.error || `Server returned ${res.status}`);
-    }
-
+    const data = await dashboardFetchJson('/api/settings', { method: 'GET' }, true);
     return persistUserSettingsLocally(data?.settings || {});
   } catch (error) {
     if (error.message !== 'Unauthorized') {
@@ -272,16 +268,11 @@ async function saveUserSettings(nextSettings) {
   }
 
   try {
-    const res = await dashboardFetch('/api/settings', {
+    const data = await dashboardFetchJson('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(resolvedSettings),
     }, true);
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data?.error || `Server returned ${res.status}`);
-    }
 
     return persistUserSettingsLocally(data?.settings || resolvedSettings);
   } catch (error) {
@@ -417,6 +408,35 @@ async function dashboardFetch(path, options = {}, requireAuth = false) {
   return response;
 }
 
+/**
+ * Helper to fetch and safely parse JSON from the dashboard.
+ * Throws a descriptive error if the response is not JSON or not OK.
+ */
+async function dashboardFetchJson(path, options = {}, requireAuth = false) {
+  const res = await dashboardFetch(path, options, requireAuth);
+  
+  const contentType = res.headers.get('content-type');
+  const isJson = contentType && contentType.includes('application/json');
+
+  if (!res.ok) {
+    let errorMsg = `Server returned ${res.status}`;
+    if (isJson) {
+      const data = await res.json();
+      errorMsg = data.error || errorMsg;
+    } else {
+      errorMsg += ` (${res.statusText || 'Error'})`;
+    }
+    throw new Error(errorMsg);
+  }
+
+  if (!isJson) {
+    const text = await res.text();
+    throw new Error(`Expected JSON but received ${contentType || 'HTML'}. This usually means the API route is missing or crashing.`);
+  }
+
+  return res.json();
+}
+
 async function initAuthState() {
   setAuthMode('signin');
   renderAuthState();
@@ -435,9 +455,7 @@ async function initAuthState() {
   };
 
   try {
-    const res = await dashboardFetch('/api/auth/session', { method: 'GET' }, true);
-    if (!res.ok) throw new Error(`Server returned ${res.status}`);
-    const data = await res.json();
+    const data = await dashboardFetchJson('/api/auth/session', { method: 'GET' }, true);
     await persistDashboardAuth({
       token: dashboardAuth.token,
       userId: data?.user?.userId || null,
@@ -478,16 +496,11 @@ async function submitExtensionAuth() {
 
   try {
     const endpoint = authMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
-    const res = await dashboardFetch(endpoint, {
+    const data = await dashboardFetchJson(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
     });
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data?.error || `Server returned ${res.status}`);
-    }
 
     await persistDashboardAuth({
       token: data?.token || null,
@@ -557,6 +570,18 @@ function setupPasswordToggle(input, btn) {
   });
 }
 
+async function ensureWorkflowSiteAccess(deniedMessage) {
+  const scope = { origins: WORKFLOW_PERMISSION_ORIGINS };
+  const alreadyGranted = await chrome.permissions.contains(scope);
+  if (alreadyGranted) return true;
+
+  const granted = await chrome.permissions.request(scope);
+  if (!granted) {
+    showToast(deniedMessage, "error");
+  }
+  return granted;
+}
+
 setupPasswordToggle(authPassword, btnTogglePassword);
 setupPasswordToggle(authConfirmPassword, btnToggleConfirmPassword);
 
@@ -576,6 +601,11 @@ btnRecord.addEventListener("click", async () => {
     showToast("Sign in to record workflows to your dashboard.", "error");
     return;
   }
+
+  const hasAccess = await ensureWorkflowSiteAccess(
+    "Grant site access to record workflows across the pages you use."
+  );
+  if (!hasAccess) return;
 
   const name = workflowName.value.trim();
 
@@ -770,9 +800,7 @@ async function fetchDashboardWorkflows() {
   workflowSelect.options.length = 1;
 
   try {
-    const res = await dashboardFetch('/api/workflows', { method: 'GET' }, true);
-    if (!res.ok) throw new Error(`Server returned ${res.status}`);
-    const workflows = await res.json();
+    const workflows = await dashboardFetchJson('/api/workflows', { method: 'GET' }, true);
     if (!Array.isArray(workflows) || workflows.length === 0) {
       dbLoadStatus.textContent = 'No workflows saved to dashboard yet.';
       return;
@@ -828,9 +856,7 @@ btnAddQueueDb.addEventListener('click', async () => {
   workflowSelect.disabled = true;
 
   try {
-    const res = await dashboardFetch(`/api/workflows/${id}`, { method: 'GET' }, true);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const wf = await res.json();
+    const wf = await dashboardFetchJson(`/api/workflows/${id}`, { method: 'GET' }, true);
     if (!Array.isArray(wf.events)) throw new Error('Workflow has no events');
     
     workflowQueue.push({
@@ -1449,6 +1475,11 @@ fileInput.addEventListener("change", async (e) => {
 
 btnPlay.addEventListener("click", async () => {
   if (workflowQueue.length === 0) return;
+
+  const hasAccess = await ensureWorkflowSiteAccess(
+    "Grant site access to replay workflows on the pages they target."
+  );
+  if (!hasAccess) return;
 
   playScreenshots = {};
   playDynamicState = null;

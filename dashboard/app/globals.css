@@ -1064,3 +1064,136 @@ select.input {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
 }
+/* jsondiffpatch styles */
+.jsondiffpatch-delta {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  margin: 0;
+  padding: 0 0 0 12px;
+  display: block;
+  overflow: visible;
+}
+.jsondiffpatch-delta pre {
+  font-family: inherit;
+  font-size: inherit;
+  margin: 0;
+  padding: 0;
+  display: inline-block;
+  background: transparent !important;
+  color: inherit !important;
+}
+ul.jsondiffpatch-delta {
+  list-style-type: none;
+  padding: 0 0 0 16px;
+  margin: 0;
+}
+.jsondiffpatch-delta ul {
+  list-style-type: none;
+  padding: 0 0 0 16px;
+  margin: 0;
+}
+.jsondiffpatch-added .jsondiffpatch-property-name,
+.jsondiffpatch-added .jsondiffpatch-value pre,
+.jsondiffpatch-modified .jsondiffpatch-right-value pre,
+.jsondiffpatch-textdiff-added {
+  background: rgba(34, 197, 94, 0.15) !important;
+  color: #86efac !important;
+}
+.jsondiffpatch-deleted .jsondiffpatch-property-name,
+.jsondiffpatch-deleted pre,
+.jsondiffpatch-modified .jsondiffpatch-left-value pre,
+.jsondiffpatch-textdiff-deleted {
+  background: rgba(239, 68, 68, 0.15) !important;
+  color: #fca5a5 !important;
+  text-decoration: line-through;
+}
+.jsondiffpatch-unchanged,
+.jsondiffpatch-movedestination {
+  color: var(--text-muted);
+}
+.jsondiffpatch-value {
+  display: inline-block;
+}
+.jsondiffpatch-property-name {
+  display: inline-block;
+  padding-right: 5px;
+  vertical-align: top;
+  color: var(--text);
+  font-weight: 600;
+}
+.jsondiffpatch-property-name:after {
+  content: ": ";
+}
+.jsondiffpatch-child-node-type-array > .jsondiffpatch-property-name:after {
+  content: ": [";
+}
+.jsondiffpatch-child-node-type-array:after {
+  content: "],";
+}
+div.jsondiffpatch-child-node-type-array:before {
+  content: "[";
+}
+div.jsondiffpatch-child-node-type-array:after {
+  content: "]";
+}
+.jsondiffpatch-child-node-type-object > .jsondiffpatch-property-name:after {
+  content: ": {";
+}
+.jsondiffpatch-child-node-type-object:after {
+  content: "},";
+}
+div.jsondiffpatch-child-node-type-object:before {
+  content: "{";
+}
+div.jsondiffpatch-child-node-type-object:after {
+  content: "}";
+}
+.jsondiffpatch-value pre:after {
+  content: ",";
+}
+li:last-child > .jsondiffpatch-value pre:after,
+.jsondiffpatch-modified > .jsondiffpatch-left-value pre:after {
+  content: "";
+}
+.jsondiffpatch-modified .jsondiffpatch-value {
+  display: inline-block;
+}
+.jsondiffpatch-modified .jsondiffpatch-right-value {
+  margin-left: 5px;
+}
+.jsondiffpatch-moved .jsondiffpatch-property-name {
+  text-decoration: line-through;
+  text-decoration-color: var(--text-muted);
+}
+.jsondiffpatch-moved .jsondiffpatch-value {
+  display: none;
+}
+.jsondiffpatch-moved .jsondiffpatch-moved-destination {
+  display: inline-block;
+  background: rgba(234, 179, 8, 0.15);
+  color: #fde047;
+}
+.jsondiffpatch-moved .jsondiffpatch-moved-destination:before {
+  content: " => ";
+}
+ul.jsondiffpatch-textdiff {
+  padding: 0;
+}
+.jsondiffpatch-textdiff-location {
+  color: var(--text-muted);
+  display: inline-block;
+  min-width: 30px;
+  font-size: 11px;
+}
+.jsondiffpatch-textdiff-line {
+  display: inline-block;
+}
+.jsondiffpatch-textdiff-line-number:after {
+  content: ",";
+}
+.jsondiffpatch-error {
+  background: var(--red);
+  color: white;
+  font-weight: bold;
+  padding: 2px 4px;
+}

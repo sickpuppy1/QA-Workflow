@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
+import { diffLines, diffChars } from 'diff'
 
 interface Checkpoint {
   id: string
@@ -62,58 +63,92 @@ function toLines(value: unknown): string[] {
   return lines
 }
 
-/** Produce a side-by-side diff of two value arrays. */
+/** Produce a side-by-side diff of two values using the 'diff' library. */
 function buildDiff(left: unknown, right: unknown): { left: DiffLine[]; right: DiffLine[] } {
-  const lLines = toLines(left)
-  const rLines = toLines(right)
-  const len = Math.max(lLines.length, rLines.length)
+  const lStr = toLines(left).join('\n')
+  const rStr = toLines(right).join('\n')
 
+  const changes = diffLines(lStr, rStr)
   const leftOut: DiffLine[] = []
   const rightOut: DiffLine[] = []
 
-  for (let i = 0; i < len; i++) {
-    const l = lLines[i]
-    const r = rLines[i]
+  for (let i = 0; i < changes.length; i++) {
+    const change = changes[i]
+    const nextChange = i < changes.length - 1 ? changes[i + 1] : null
 
-    if (l === undefined) {
-      leftOut.push({ line: '', status: 'only-right' })
-      rightOut.push({ line: r, status: 'only-right' })
-    } else if (r === undefined) {
-      leftOut.push({ line: l, status: 'only-left' })
-      rightOut.push({ line: '', status: 'only-left' })
-    } else if (l === r) {
-      leftOut.push({ line: l, status: 'match' })
-      rightOut.push({ line: r, status: 'match' })
+    // Helper to split change value into lines properly
+    const getLines = (val: string) => {
+      const res = val.split('\n')
+      // diffLines often includes a trailing newline in the value of a block
+      if (res.length > 1 && res[res.length - 1] === '') res.pop()
+      return res
+    }
+
+    if (change.removed && nextChange?.added) {
+      // Pair a removed block with an added block as a "mismatch" for side-by-side alignment
+      const lLines = getLines(change.value)
+      const rLines = getLines(nextChange.value)
+      const common = Math.min(lLines.length, rLines.length)
+
+      for (let j = 0; j < common; j++) {
+        leftOut.push({ line: lLines[j], status: 'mismatch' })
+        rightOut.push({ line: rLines[j], status: 'mismatch' })
+      }
+
+      if (lLines.length > common) {
+        for (let j = common; j < lLines.length; j++) {
+          leftOut.push({ line: lLines[j], status: 'only-left' })
+          rightOut.push({ line: '', status: 'only-left' })
+        }
+      } else if (rLines.length > common) {
+        for (let j = common; j < rLines.length; j++) {
+          leftOut.push({ line: '', status: 'only-right' })
+          rightOut.push({ line: rLines[j], status: 'only-right' })
+        }
+      }
+      i++ // Skip the next added change as we've already processed it
+    } else if (change.added) {
+      const lines = getLines(change.value)
+      for (const line of lines) {
+        leftOut.push({ line: '', status: 'only-right' })
+        rightOut.push({ line: line, status: 'only-right' })
+      }
+    } else if (change.removed) {
+      const lines = getLines(change.value)
+      for (const line of lines) {
+        leftOut.push({ line: line, status: 'only-left' })
+        rightOut.push({ line: '', status: 'only-left' })
+      }
     } else {
-      leftOut.push({ line: l, status: 'mismatch' })
-      rightOut.push({ line: r, status: 'mismatch' })
+      const lines = getLines(change.value)
+      for (const line of lines) {
+        leftOut.push({ line: line, status: 'match' })
+        rightOut.push({ line: line, status: 'match' })
+      }
     }
   }
 
   return { left: leftOut, right: rightOut }
 }
 
-/**
- * Character-level inline diff using common-prefix / common-suffix trimming.
- * Only the "middle" changed segment is highlighted — not the whole line.
- */
+/** Character-level inline diff using the 'diff' library. */
 function getInlineParts(left: string, right: string): { leftParts: InlinePart[]; rightParts: InlinePart[] } {
-  let ps = 0
-  while (ps < left.length && ps < right.length && left[ps] === right[ps]) ps++
+  const parts = diffChars(left, right)
+  const leftParts: InlinePart[] = []
+  const rightParts: InlinePart[] = []
 
-  let ls = left.length - 1
-  let rs = right.length - 1
-  while (ls >= ps && rs >= ps && left[ls] === right[rs]) { ls--; rs-- }
-
-  const prefix = left.slice(0, ps)
-  const lMid   = left.slice(ps, ls + 1)
-  const rMid   = right.slice(ps, rs + 1)
-  const suffix  = left.slice(ls + 1) // equal suffix for both
-
-  return {
-    leftParts:  [{ text: prefix, highlight: false }, { text: lMid, highlight: lMid.length > 0 }, { text: suffix, highlight: false }],
-    rightParts: [{ text: prefix, highlight: false }, { text: rMid, highlight: rMid.length > 0 }, { text: suffix, highlight: false }],
+  for (const part of parts) {
+    if (part.added) {
+      rightParts.push({ text: part.value, highlight: true })
+    } else if (part.removed) {
+      leftParts.push({ text: part.value, highlight: true })
+    } else {
+      leftParts.push({ text: part.value, highlight: false })
+      rightParts.push({ text: part.value, highlight: false })
+    }
   }
+
+  return { leftParts, rightParts }
 }
 
 function diffLineStyle(status: DiffLine['status']): React.CSSProperties {

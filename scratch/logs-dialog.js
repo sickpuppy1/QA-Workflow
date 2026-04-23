@@ -238,16 +238,12 @@
       "wfCheckpointIntents",
     ]);
 
-    console.log('[WF:buffer] bufferCheckpointIntent', {
-      wfMode: stored.wfMode,
-      wfRecordingSessionId: stored.wfRecordingSessionId,
-      eventType: event?.type,
-      checkpointId: event?.checkpointId,
-    });
+    if (stored.wfMode !== "recording") {
+      throw new Error("Recording is not active");
+    }
 
     if (!stored.wfRecordingSessionId) {
-      console.warn('[WF:buffer] REJECTED: no wfRecordingSessionId (wfMode=', stored.wfMode, ')');
-      throw new Error("No active recording session");
+      throw new Error("Recording session is not ready");
     }
 
     const existingIntents = Array.isArray(stored.wfCheckpointIntents) ? stored.wfCheckpointIntents : [];
@@ -261,7 +257,6 @@
     });
 
     await chrome.storage.local.set({ wfCheckpointIntents: nextIntents });
-    console.log('[WF:buffer] buffered checkpoint intent OK, total intents:', nextIntents.length);
   }
 
   function hasNetworkDetailData(item) {
@@ -275,42 +270,15 @@
     );
   }
 
-  async function settleSelectedNetworkItem(selected, timeoutMs = 2000) {
+  async function settleSelectedNetworkItem(selected, timeoutMs = 500) {
     const key = getItemKey("network", selected);
     let current = DIALOGS.network.items.find((item) => getItemKey("network", item) === key) || selected;
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < timeoutMs) {
       if (hasNetworkDetailData(current)) break;
-      await new Promise((resolve) => setTimeout(resolve, 80));
-      // Re-check local list (updated by live NETWORK_CALL_LIVE messages)
+      await new Promise((resolve) => setTimeout(resolve, 50));
       current = DIALOGS.network.items.find((item) => getItemKey("network", item) === key) || current;
-    }
-
-    // If still no detail data, re-fetch the full list from the service worker.
-    // The SW's in-memory state is always more up-to-date than the dialog's local
-    // list because it processes RECORD_NETWORK_CALL_WITH_BODY directly and may
-    // have the body backfill before the NETWORK_CALL_LIVE message even arrives.
-    if (!hasNetworkDetailData(current)) {
-      try {
-        const res = await chrome.runtime.sendMessage({ type: "GET_NETWORK_CALLS" });
-        const swCalls = res?.calls || [];
-        // Find ALL matching entries from the SW by comparing URL + method
-        // Then pick the one with the most detail data (highest networkDetailScore)
-        const matches = swCalls.filter((call) =>
-          (call.url || "") === (current.url || "") &&
-          (call.method || "GET") === (current.method || "GET")
-        );
-        // Sort by detail score descending to get the richest entry
-        const freshMatch = matches.sort((a, b) => networkDetailScore(b) - networkDetailScore(a))[0];
-        if (freshMatch && hasNetworkDetailData(freshMatch)) {
-          // Merge: prefer SW data (more complete) over local skeleton
-          current = { ...current, ...freshMatch };
-          // Update local list too so the dialog shows the enriched data
-          const idx = DIALOGS.network.items.findIndex((item) => getItemKey("network", item) === key);
-          if (idx >= 0) DIALOGS.network.items[idx] = { ...DIALOGS.network.items[idx], ...freshMatch };
-        }
-      } catch (_) {}
     }
 
     if (DIALOGS.network.selected && getItemKey("network", DIALOGS.network.selected) === key) {
@@ -416,62 +384,70 @@
     header.appendChild(clearBtn);
     header.appendChild(closeBtn);
 
-    // ── Drag (pointer-capture approach) ─────────────────────────────────────
-    // We use setPointerCapture so that pointermove fires on the drag-handle
-    // element itself rather than on document. This sidesteps the recorder's
-    // capture-phase mousemove listener that would otherwise steal events.
-    function attachDragHandlers(handle) {
-      handle.addEventListener("pointerdown", (e) => {
-        if (handle === header && (e.target === clearBtn || e.target === closeBtn)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        handle.setPointerCapture(e.pointerId);
-        dialog.style.zIndex = "2147483648";
-        const other = document.getElementById(DIALOGS[type === "console" ? "network" : "console"].id);
-        if (other) other.style.zIndex = "2147483647";
-        handle.style.cursor = "grabbing";
+    // ── Drag ────────────────────────────────────────────────────────────────
+    let isDragging = false, dragStartX, dragStartY, initialLeft, initialTop;
 
-        // Convert current CSS position to left/top so math is consistent.
-        const rect = dialog.getBoundingClientRect();
-        let anchorLeft = rect.left;
-        let anchorTop  = rect.top;
-        const startX = e.clientX;
-        const startY = e.clientY;
-        // Clear right/bottom so only left/top drive position
-        dialog.style.right  = "auto";
-        dialog.style.bottom = "auto";
-        dialog.style.left   = `${anchorLeft}px`;
-        dialog.style.top    = `${anchorTop}px`;
+    const startDrag = (e) => {
+      isDragging = true;
+      header.style.cursor = "grabbing";
+      footer.style.cursor = "grabbing";
+      dialog.style.zIndex = "2147483648";
+      const other = document.getElementById(DIALOGS[type === "console" ? "network" : "console"].id);
+      if (other) other.style.zIndex = "2147483647";
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      const rect = dialog.getBoundingClientRect();
+      initialLeft = rect.left;
+      initialTop  = rect.top;
+      e.preventDefault();
+    };
 
-        function onMove(ev) {
-          let newLeft = anchorLeft + (ev.clientX - startX);
-          let newTop  = anchorTop  + (ev.clientY - startY);
-          // Clamp: keep header (≈44px) at least 30px inside the viewport on all edges.
-          const EDGE = 30;
-          const headerH = header.offsetHeight || 44;
-          const vw = window.innerWidth;
-          const vh = window.innerHeight;
-          const dw = dialog.offsetWidth;
-          newTop  = Math.max(-(headerH - EDGE), newTop);   // cannot go above so only EDGE px of header is hidden
-          newTop  = Math.min(vh - EDGE, newTop);            // cannot go below viewport bottom
-          newLeft = Math.max(-(dw - EDGE), newLeft);        // cannot go past left edge
-          newLeft = Math.min(vw - EDGE, newLeft);           // cannot go past right edge
-          dialog.style.left = `${newLeft}px`;
-          dialog.style.top  = `${newTop}px`;
-        }
+    header.addEventListener("mousedown", (e) => {
+      if (e.target === clearBtn || e.target === closeBtn) return;
+      startDrag(e);
+    });
 
-        function onUp() {
-          handle.style.cursor = "grab";
-          handle.removeEventListener("pointermove", onMove);
-          handle.removeEventListener("pointerup",   onUp);
-          handle.removeEventListener("pointercancel", onUp);
-        }
+    footer.addEventListener("mousedown", (e) => {
+      if (e.target === labelInput || e.target === addBtn) return;
+      startDrag(e);
+    });
 
-        handle.addEventListener("pointermove",   onMove);
-        handle.addEventListener("pointerup",     onUp);
-        handle.addEventListener("pointercancel", onUp);
-      });
-    }
+    document.addEventListener("mousemove", (e) => {
+      if (!isDragging) return;
+      
+      const viewportW = window.innerWidth;
+      const viewportH = window.innerHeight;
+      const rect = dialog.getBoundingClientRect();
+      
+      let nextLeft = initialLeft + (e.clientX - dragStartX);
+      let nextTop  = initialTop  + (e.clientY - dragStartY);
+
+      // Clamp "top" so header is always accessible.
+      // We allow dragging slightly off the bottom/sides, but the top must stay at 0.
+      nextTop = Math.max(0, Math.min(nextTop, viewportH - 40));
+      nextLeft = Math.max(-rect.width + 100, Math.min(nextLeft, viewportW - 100));
+
+      dialog.style.left   = `${nextLeft}px`;
+      dialog.style.top    = `${nextTop}px`;
+      dialog.style.right  = "auto";
+      dialog.style.bottom = "auto";
+    });
+
+    document.addEventListener("mouseup", () => {
+      if (!isDragging) return;
+      isDragging = false;
+      header.style.cursor = "grab";
+      footer.style.cursor = "grab";
+    });
+
+    window.addEventListener("resize", () => {
+      if (dialog.style.display === "none") return;
+      const r = dialog.getBoundingClientRect();
+      if (r.top < 0) dialog.style.top = "0px";
+      if (r.left < 0) dialog.style.left = "0px";
+      if (r.top > window.innerHeight - 40) dialog.style.top = `${window.innerHeight - 40}px`;
+      if (r.left > window.innerWidth - 40) dialog.style.left = `${window.innerWidth - 40}px`;
+    });
 
     // ── Body — list + detail pane ────────────────────────────────────────────
     const body = document.createElement("div");
@@ -502,26 +478,6 @@
     body.appendChild(listContainer);
     body.appendChild(detailPanel);
 
-    // ── Bottom drag strip (fallback when header is off-screen) ───────────────
-    const dragStrip = document.createElement("div");
-    dragStrip.title = "Drag to move";
-    dragStrip.style.cssText = `
-      height: 14px;
-      background: #1a1d27;
-      border-top: 1px solid rgba(255,255,255,0.07);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: grab;
-      user-select: none;
-      flex-shrink: 0;
-    `;
-    dragStrip.innerHTML = `<span style="color:#4b5563;font-size:10px;letter-spacing:3px;">&#8943;</span>`;
-
-    // Wire up pointer-capture drag on both the header and the bottom strip
-    attachDragHandlers(header);
-    attachDragHandlers(dragStrip);
-
     // ── Footer ───────────────────────────────────────────────────────────────
     const footer = document.createElement("div");
     footer.style.cssText = `
@@ -531,6 +487,8 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
+      cursor: grab;
+      user-select: none;
     `;
 
     const inputWrap = document.createElement("div");
@@ -562,7 +520,6 @@
 
     dialog.appendChild(header);
     dialog.appendChild(body);
-    dialog.appendChild(dragStrip);
     dialog.appendChild(footer);
     document.body.appendChild(dialog);
     return dialog;
@@ -857,17 +814,6 @@
         const checkpointTimestamp = Date.now();
         const checkpointId = createCheckpointId();
         const autoLabel = label || `Network: ${settledSelected.method || "GET"} ${(settledSelected.url || "").slice(0, 35)}`;
-
-        console.log('[WF:dialog] handleAddCheckpoint network — settledSelected', {
-          url: settledSelected.url,
-          method: settledSelected.method,
-          status: settledSelected.status,
-          hasReqHeaders: !!(settledSelected.requestHeaders && Object.keys(settledSelected.requestHeaders).length),
-          hasResHeaders: !!(settledSelected.responseHeaders && Object.keys(settledSelected.responseHeaders).length),
-          hasReqBody: settledSelected.requestBody != null,
-          hasResBody: settledSelected.responseBody != null,
-        });
-
         const bufferedEvent = {
           type: "network_checkpoint",
           checkpointId,
@@ -883,18 +829,12 @@
           url: window.location.href,
           timestamp: checkpointTimestamp,
         };
-
-        console.log('[WF:dialog] attempting bufferCheckpointIntent for network checkpoint');
         try {
           await bufferCheckpointIntent(bufferedEvent);
           buffered = true;
-          console.log('[WF:dialog] bufferCheckpointIntent network OK');
         } catch (err) {
           bufferError = err;
-          console.warn('[WF:dialog] bufferCheckpointIntent network FAILED:', err?.message);
         }
-
-        console.log('[WF:dialog] sending ADD_NETWORK_CHECKPOINT to SW');
         try {
           result = await chrome.runtime.sendMessage({
             type: "ADD_NETWORK_CHECKPOINT",
@@ -910,15 +850,10 @@
             checkpointId,
             checkpointTimestamp,
           });
-          console.log('[WF:dialog] ADD_NETWORK_CHECKPOINT SW response:', result);
         } catch (err) {
           transportError = err;
-          console.error('[WF:dialog] ADD_NETWORK_CHECKPOINT transport error:', err?.message);
         }
       }
-
-
-      console.log('[WF:dialog] checkpoint result evaluation', { result, buffered, bufferError: bufferError?.message, transportError: transportError?.message });
 
       if (result && result.error) {
         throw new Error(result.error);
@@ -935,7 +870,6 @@
       if (!buffered && !result?.ok) {
         throw new Error("Checkpoint was not saved");
       }
-
 
       input.value = "";
       DIALOGS[type].selected = null;
@@ -985,34 +919,36 @@
           renderList(t);
         });
         sendResponse({ ok: true });
-      } else if (msg.type === "NETWORK_CALL_LIVE") {
-        upsertItem("network", msg.call);
-        const dialog = document.getElementById(DIALOGS.network.id);
-        if (dialog && dialog.style.display === "flex") {
-          renderList("network");
-          const list = dialog.querySelector(".__wf_logs_list__");
-          if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 60) {
-            list.scrollTop = list.scrollHeight;
-          }
-        }
-        sendResponse({ ok: true });
-      } else if (msg.type === "CONSOLE_LOG_LIVE") {
-        upsertItem("console", msg.log);
-        const dialog = document.getElementById(DIALOGS.console.id);
-        if (dialog && dialog.style.display === "flex") {
-          renderList("console");
-          const list = dialog.querySelector(".__wf_logs_list__");
-          if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 60) {
-            list.scrollTop = list.scrollHeight;
-          }
-        }
-        sendResponse({ ok: true });
       }
     } catch (e) {}
     return false;
   });
 
+  // Real-time updates via window.postMessage from page-interceptor.js (MAIN world).
+  // postMessage is the only API that crosses the MAIN→ISOLATED world boundary.
+  // CustomEvent fired in MAIN world is invisible here in the ISOLATED world.
+  window.addEventListener("message", (e) => {
+    if (!e.data || e.data.__wfSrc !== "__wf_interceptor__") return;
 
+    if (e.data.type === "console_log") {
+      const entry = {
+        message:   e.data.message,
+        level:     e.data.level || "log",
+        timestamp: e.data.timestamp,
+        url:       e.data.url || window.location.href,
+      };
+      upsertItem("console", entry);
+
+      const dialog = document.getElementById(DIALOGS.console.id);
+      if (dialog && dialog.style.display === "flex") {
+        renderList("console");
+        const list = dialog.querySelector(".__wf_logs_list__");
+        if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 60) {
+          list.scrollTop = list.scrollHeight;
+        }
+      }
+    }
+  });
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type !== "NETWORK_CALL_LIVE" || !msg.call) return false;

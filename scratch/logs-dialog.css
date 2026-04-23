@@ -1,0 +1,29 @@
+/* 
+ * Content Script - Logs Dialog CSS
+ * Most styling is handled via inline injected CSS to prevent page conflicts,
+ * but customized scrollbars and specific animations reside here.
+ */
+
+#__wf_logs_dialog__ * {
+  box-sizing: border-box;
+}
+
+/* Custom Scrollbar */
+#__wf_logs_dialog__ ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+#__wf_logs_dialog__ ::-webkit-scrollbar-track {
+  background: #1f2937;
+  border-radius: 4px;
+}
+
+#__wf_logs_dialog__ ::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 4px;
+}
+
+#__wf_logs_dialog__ ::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}

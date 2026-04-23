@@ -1,3 +1,5 @@
+import { DASHBOARD_URL, isDashboardUrl } from "../shared/dashboard-config.js";
+
 /**
  * Service Worker — Orchestrator
  *
@@ -11,8 +13,6 @@
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
-// Dashboard API base URL — update this if deploying the dashboard elsewhere
-const DASHBOARD_URL = 'http://localhost:3000';
 const DASHBOARD_AUTH_TOKEN_KEY = 'dashboardAuthToken';
 const RECENT_CAPTURE_WINDOW = 200;
 const DEFAULT_NETWORK_MERGE_WINDOW_MS = 500;
@@ -492,23 +492,123 @@ function truncateForStorage(value, maxLen = 2000) {
   return value.length > maxLen ? value.slice(0, maxLen) : value;
 }
 
+function isSensitiveNetworkKey(key) {
+  return /(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|token|secret|session|jwt|csrf|xsrf|password)/i.test(String(key || ""));
+}
+
+function redactUrlSensitiveParts(rawUrl) {
+  if (typeof rawUrl !== "string" || !rawUrl) return rawUrl ?? null;
+  try {
+    const parsed = new URL(rawUrl);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.searchParams.forEach((_value, key) => {
+      if (isSensitiveNetworkKey(key)) {
+        parsed.searchParams.set(key, "[REDACTED]");
+      }
+    });
+    return parsed.toString();
+  } catch (_) {
+    return rawUrl.replace(/([?&](?:token|access_token|password|secret|api[_-]?key|session)=)[^&]*/gi, "$1[REDACTED]");
+  }
+}
+
 function sanitizeHeadersForStorage(headers, maxKeys = 24, maxValueLen = 160) {
   const source = headers && typeof headers === "object" ? headers : {};
   return Object.fromEntries(
     Object.entries(source)
       .slice(0, maxKeys)
-      .map(([key, value]) => [key, truncateForStorage(typeof value === "string" ? value : String(value), maxValueLen)])
+      .map(([key, value]) => {
+        if (isSensitiveNetworkKey(key)) return [key, "[REDACTED]"];
+        return [key, truncateForStorage(typeof value === "string" ? value : String(value), maxValueLen)];
+      })
   );
+}
+
+function sanitizeNetworkBody(value) {
+  if (value == null) return null;
+  const text = typeof value === "string" ? value : String(value);
+  return `[REDACTED ${text.length} chars]`;
+}
+
+function sanitizeNetworkCall(call) {
+  if (!call || typeof call !== "object") return call;
+  return {
+    ...call,
+    url: redactUrlSensitiveParts(call.url),
+    tabUrl: redactUrlSensitiveParts(call.tabUrl),
+    requestHeaders: sanitizeHeadersForStorage(call.requestHeaders),
+    responseHeaders: sanitizeHeadersForStorage(call.responseHeaders),
+    requestBody: sanitizeNetworkBody(call.requestBody),
+    responseBody: sanitizeNetworkBody(call.responseBody),
+    statusText: truncateForStorage(call.statusText, 120),
+  };
+}
+
+/**
+ * Sanitizes a network call for checkpoint storage.
+ *
+ * Unlike sanitizeNetworkCall (which aggressively redacts all bodies and
+ * sensitive header values for live-traffic rolling buffers), this variant
+ * PRESERVES body content and header values — it only truncates to safe
+ * lengths. Checkpoints are explicit user actions; their payload data must
+ * be retained so they can be used for assertions during playback.
+ */
+function sanitizeNetworkCallForCheckpoint(call) {
+  if (!call || typeof call !== "object") return call;
+  const truncateHeaders = (headers, maxKeys = 40, maxValueLen = 500) => {
+    const source = headers && typeof headers === "object" ? headers : {};
+    return Object.fromEntries(
+      Object.entries(source)
+        .slice(0, maxKeys)
+        .map(([key, value]) => [
+          key,
+          truncateForStorage(typeof value === "string" ? value : String(value), maxValueLen),
+        ])
+    );
+  };
+  return {
+    ...call,
+    url: redactUrlSensitiveParts(call.url),
+    tabUrl: redactUrlSensitiveParts(call.tabUrl),
+    requestHeaders: truncateHeaders(call.requestHeaders),
+    responseHeaders: truncateHeaders(call.responseHeaders),
+    requestBody: truncateForStorage(call.requestBody != null ? String(call.requestBody) : null, 4000),
+    responseBody: truncateForStorage(call.responseBody != null ? String(call.responseBody) : null, 4000),
+    statusText: truncateForStorage(call.statusText, 120),
+  };
 }
 
 function sanitizeCheckpointForStorage(item) {
   if (!item) return item;
+  if (item.type === "network_checkpoint") {
+    // Use the checkpoint-safe sanitizer: preserves body & header values, only truncates.
+    const sanitizedCall = sanitizeNetworkCallForCheckpoint({
+      url: item.networkUrl,
+      requestHeaders: item.networkRequestHeaders,
+      responseHeaders: item.networkResponseHeaders,
+      requestBody: item.networkRequestBody,
+      responseBody: item.networkResponseBody,
+      statusText: item.networkStatusText,
+    });
+    return {
+      ...item,
+      networkUrl: truncateForStorage(sanitizedCall.url, 1000),
+      networkRequestBody: sanitizedCall.requestBody,
+      networkResponseBody: sanitizedCall.responseBody,
+      networkStatusText: sanitizedCall.statusText,
+      networkRequestHeaders: sanitizedCall.requestHeaders,
+      networkResponseHeaders: sanitizedCall.responseHeaders,
+      logContextBefore: Array.isArray(item.logContextBefore) ? item.logContextBefore.slice(-1) : [],
+      logContextAfter: Array.isArray(item.logContextAfter) ? item.logContextAfter.slice(0, 1) : [],
+    };
+  }
   return {
     ...item,
     logMessage: truncateForStorage(item.logMessage, 1000),
-    networkUrl: truncateForStorage(item.networkUrl, 1000),
-    networkRequestBody: truncateForStorage(item.networkRequestBody, 2000),
-    networkResponseBody: truncateForStorage(item.networkResponseBody, 2000),
+    networkUrl: truncateForStorage(redactUrlSensitiveParts(item.networkUrl), 1000),
+    networkRequestBody: sanitizeNetworkBody(item.networkRequestBody),
+    networkResponseBody: sanitizeNetworkBody(item.networkResponseBody),
     networkStatusText: truncateForStorage(item.networkStatusText, 120),
     networkRequestHeaders: sanitizeHeadersForStorage(item.networkRequestHeaders),
     networkResponseHeaders: sanitizeHeadersForStorage(item.networkResponseHeaders),
@@ -561,38 +661,53 @@ function canMergeNetworkCalls(a, b, windowMs = DEFAULT_NETWORK_MERGE_WINDOW_MS) 
   if (a.status != null && b.status != null && a.status !== b.status) return false;
   const ta = typeof a.timestamp === "number" ? a.timestamp : null;
   const tb = typeof b.timestamp === "number" ? b.timestamp : null;
+  // If one entry is a skeleton (no body data, no headers) it came from
+  // chrome.webRequest. Skip the time-window check so the page-interceptor
+  // enrichment always merges in, regardless of how long body buffering took.
+  const aIsRich = networkFieldCount(a) > 0;
+  const bIsRich = networkFieldCount(b) > 0;
+  if (!aIsRich || !bIsRich) return true;  // always allow skeleton → rich merge
   if (ta != null && tb != null && Math.abs(ta - tb) > windowMs) return false;
   return true;
 }
 
 function mergeNetworkCallEntries(existing, incoming) {
+  const safeExisting = sanitizeNetworkCallForCheckpoint(existing);
+  const safeIncoming = sanitizeNetworkCallForCheckpoint(incoming);
   const timestamps = [existing?.timestamp, incoming?.timestamp].filter((value) => typeof value === "number");
   return {
-    ...existing,
-    ...incoming,
-    status: incoming?.status ?? existing?.status ?? null,
-    statusText: incoming?.statusText ?? existing?.statusText ?? null,
-    requestHeaders: (incoming?.requestHeaders && Object.keys(incoming.requestHeaders).length > 0)
-      ? incoming.requestHeaders
-      : existing?.requestHeaders ?? {},
-    requestBody: incoming?.requestBody ?? existing?.requestBody ?? null,
-    responseHeaders: (incoming?.responseHeaders && Object.keys(incoming.responseHeaders).length > 0)
-      ? incoming.responseHeaders
-      : existing?.responseHeaders ?? {},
-    responseBody: incoming?.responseBody ?? existing?.responseBody ?? null,
+    ...safeExisting,
+    ...safeIncoming,
+    status: safeIncoming?.status ?? safeExisting?.status ?? null,
+    statusText: safeIncoming?.statusText ?? safeExisting?.statusText ?? null,
+    requestHeaders: (safeIncoming?.requestHeaders && Object.keys(safeIncoming.requestHeaders).length > 0)
+      ? safeIncoming.requestHeaders
+      : safeExisting?.requestHeaders ?? {},
+    requestBody: safeIncoming?.requestBody ?? safeExisting?.requestBody ?? null,
+    responseHeaders: (safeIncoming?.responseHeaders && Object.keys(safeIncoming.responseHeaders).length > 0)
+      ? safeIncoming.responseHeaders
+      : safeExisting?.responseHeaders ?? {},
+    responseBody: safeIncoming?.responseBody ?? safeExisting?.responseBody ?? null,
     timestamp: timestamps.length > 0 ? Math.min(...timestamps) : incoming?.timestamp ?? existing?.timestamp ?? null,
-    tabUrl: incoming?.tabUrl ?? existing?.tabUrl ?? null,
+    tabUrl: safeIncoming?.tabUrl ?? safeExisting?.tabUrl ?? null,
   };
 }
 
 function upsertRecordedNetworkCall(tabId, call) {
+  // Use the checkpoint-safe sanitizer so that request/response bodies and
+  // header values are preserved in the in-memory rolling buffer.
+  // The 64 KB body cap in page-interceptor.js already prevents OOM — we
+  // do NOT need to redact bodies again here. Using sanitizeNetworkCall()
+  // here caused all network checkpoints to arrive with null bodies and
+  // empty header objects because the data was wiped before it was ever read.
+  const safeCall = sanitizeNetworkCallForCheckpoint(call);
   state.networkCalls[tabId] = state.networkCalls[tabId] || [];
   const calls = state.networkCalls[tabId];
   let bestIndex = -1;
   let bestScore = -1;
 
   for (let i = calls.length - 1; i >= 0; i--) {
-    if (!canMergeNetworkCalls(calls[i], call, state.networkMergeWindowMs)) continue;
+    if (!canMergeNetworkCalls(calls[i], safeCall, state.networkMergeWindowMs)) continue;
     const score = networkFieldCount(calls[i]);
     if (score > bestScore) {
       bestScore = score;
@@ -601,13 +716,13 @@ function upsertRecordedNetworkCall(tabId, call) {
   }
 
   if (bestIndex >= 0) {
-    calls[bestIndex] = mergeNetworkCallEntries(calls[bestIndex], call);
+    calls[bestIndex] = mergeNetworkCallEntries(calls[bestIndex], safeCall);
     return calls[bestIndex];
   }
 
   if (calls.length >= RECENT_CAPTURE_WINDOW) calls.shift();
-  calls.push(call);
-  return call;
+  calls.push(safeCall);
+  return safeCall;
 }
 
 async function readBufferedCheckpointIntents() {
@@ -1066,6 +1181,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               state.consoleLogs[tid].shift();
             }
             state.consoleLogs[tid].push(msg.log);
+            chrome.tabs.sendMessage(tid, { type: "CONSOLE_LOG_LIVE", log: msg.log }).catch(() => {});
           }
         }
         sendResponse({ ok: true });
@@ -1079,21 +1195,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
 
     case "RECORD_NETWORK_CALL_WITH_BODY":
-      // Enriches the network call record from chrome.webRequest with request/response
-      // body data that only the MAIN world fetch/XHR interceptor can see.
+      // Enriches the network call record with request/response body data that
+      // only the MAIN world fetch/XHR interceptor can see.
+      // NOTE: We intentionally do NOT guard on state.mode === "recording" here.
+      // The dialog can be open in any mode; dropping data based on mode meant
+      // headers and bodies were never stored, so GET_NETWORK_CALLS returned []
+      // and the network dialog always showed blank detail panels.
       readyPromise.then(() => {
-        if (state.mode === "recording") {
-          const tid = sender.tab?.id;
-          if (tid) {
-            const call = msg.call;
-            if (isStaleNetworkEntry(tid, call)) {
-              sendResponse({ ok: true });
-              return;
-            }
-            const mergedCall = upsertRecordedNetworkCall(tid, call);
-            chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => {});
-            chrome.tabs.sendMessage(tid, { type: "NETWORK_CALL_LIVE", call: mergedCall }).catch(() => {});
+        const tid = sender.tab?.id;
+        console.log('[WF:net] RECORD_NETWORK_CALL_WITH_BODY received', {
+          mode: state.mode,
+          tabId: tid,
+          url: msg.call?.url,
+          method: msg.call?.method,
+          hasReqHeaders: !!(msg.call?.requestHeaders && Object.keys(msg.call.requestHeaders).length),
+          hasResHeaders: !!(msg.call?.responseHeaders && Object.keys(msg.call.responseHeaders).length),
+          hasReqBody: msg.call?.requestBody != null,
+          hasResBody: msg.call?.responseBody != null,
+        });
+        if (tid) {
+          const call = msg.call;
+          if (isStaleNetworkEntry(tid, call)) {
+            console.log('[WF:net] entry is stale, discarding', call?.url);
+            sendResponse({ ok: true });
+            return;
           }
+          const mergedCall = upsertRecordedNetworkCall(tid, call);
+          console.log('[WF:net] upserted into state.networkCalls[', tid, ']', {
+            url: mergedCall?.url,
+            hasReqHeaders: !!(mergedCall?.requestHeaders && Object.keys(mergedCall.requestHeaders).length),
+            hasResHeaders: !!(mergedCall?.responseHeaders && Object.keys(mergedCall.responseHeaders).length),
+            hasReqBody: mergedCall?.requestBody != null,
+            hasResBody: mergedCall?.responseBody != null,
+            totalStoredCalls: state.networkCalls[tid]?.length,
+          });
+          chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => {});
+          // Always broadcast the live update so the dialog stays in sync
+          chrome.tabs.sendMessage(tid, { type: "NETWORK_CALL_LIVE", call: mergedCall }).catch(() => {});
+        } else {
+          console.warn('[WF:net] RECORD_NETWORK_CALL_WITH_BODY: no sender.tab.id — cannot store call', msg.call?.url);
         }
         sendResponse({ ok: true });
       });
@@ -1103,9 +1243,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ logs: state.consoleLogs[sender.tab?.id] || [] });
       return false;
 
-    case "GET_NETWORK_CALLS":
-      sendResponse({ calls: pruneNetworkEntries(sender.tab?.id) });
+    case "GET_NETWORK_CALLS": {
+      const _tid = sender.tab?.id;
+      const _calls = pruneNetworkEntries(_tid);
+      console.log('[WF:net] GET_NETWORK_CALLS for tabId', _tid, '→', _calls.length, 'calls',
+        _calls.map(c => ({ url: c.url, method: c.method, status: c.status,
+          hasReqHeaders: !!(c.requestHeaders && Object.keys(c.requestHeaders).length),
+          hasResHeaders: !!(c.responseHeaders && Object.keys(c.responseHeaders).length),
+          hasReqBody: c.requestBody != null, hasResBody: c.responseBody != null })));
+      sendResponse({ calls: _calls });
       return false;
+    }
 
     case "CLEAR_CONSOLE_LOGS":
       if (sender.tab?.id) {
@@ -1159,6 +1307,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         msg.checkpointId || null,
         msg.checkpointTimestamp || null,
         sendResponse,
+        sender.tab || null,
       ));
       return true;
 
@@ -1176,6 +1325,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         msg.checkpointId || null,
         msg.checkpointTimestamp || null,
         sendResponse,
+        sender.tab || null,
       ));
       return true;
 
@@ -1315,9 +1465,15 @@ async function handleStartRecording(msg, sendResponse) {
     return;
   }
 
+  const targetTabId = Number.isInteger(msg.tabId) ? msg.tabId : null;
+  if (!targetTabId) {
+    sendResponse({ error: "Open the extension on the tab you want to record." });
+    return;
+  }
+
   resetState();
   state.mode = "recording";
-  state.recordingTabId = msg.tabId ?? null;
+  state.recordingTabId = targetTabId;
   state.workflowName = msg.name || "";
   state.recordingSessionId = createRecordingSessionId();
   state.dialogState = { consoleOpen: false, networkOpen: false };
@@ -1326,8 +1482,15 @@ async function handleStartRecording(msg, sendResponse) {
   await setRecordingActive();
   await persistEvents();
 
-  // 2. Ensure content scripts are injected and activated on all tabs.
-  await activateRecorderOnAllTabs();
+  // 2. Activate the recorder only on the tab the user explicitly invoked.
+  const started = await activateTabRecorder(targetTabId, "start");
+  if (!started) {
+    state.mode = "idle";
+    state.recordingTabId = null;
+    await setRecordingIdle();
+    sendResponse({ error: "This page cannot be recorded. Try a normal http(s) tab." });
+    return;
+  }
 
   sendResponse({ ok: true, mode: state.mode });
 }
@@ -1565,15 +1728,31 @@ async function handleAddCheckpoint(label, sendResponse) {
  * @param {string} label - Human-readable name shown in the UI.
  * @param {Function} sendResponse
  */
-async function handleAddConsoleCheckpoint(logEntryOrMessage, label, contextBefore, contextAfter, checkpointId, checkpointTimestamp, sendResponse) {
+async function resolveCheckpointSourceTab(sourceTab) {
+  if (sourceTab?.id) return sourceTab;
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return activeTab || null;
+}
+
+async function handleAddConsoleCheckpoint(logEntryOrMessage, label, contextBefore, contextAfter, checkpointId, checkpointTimestamp, sendResponse, sourceTab = null) {
   await readyPromise;
-  if (state.mode !== "recording") {
-    sendResponse({ error: "Not recording" });
+
+  console.log('[WF:checkpoint] handleAddConsoleCheckpoint called', {
+    mode: state.mode,
+    sessionId: state.recordingSessionId,
+    label,
+    checkpointId,
+  });
+
+  if (!state.recordingSessionId) {
+    console.warn('[WF:checkpoint] REJECTED: no recordingSessionId (mode=', state.mode, ')');
+    sendResponse({ error: "No active recording session" });
     return;
   }
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = await resolveCheckpointSourceTab(sourceTab);
   if (!tab) {
+    console.warn('[WF:checkpoint] REJECTED: no active tab');
     sendResponse({ error: "No active tab" });
     return;
   }
@@ -1597,11 +1776,15 @@ async function handleAddConsoleCheckpoint(logEntryOrMessage, label, contextBefor
       url: tab.url,
       timestamp: checkpointTimestamp || Date.now(),
     };
+
+    console.log('[WF:checkpoint] appending console checkpoint', { checkpointId: checkpointEvent.checkpointId, label: autoLabel });
     await appendCheckpointToRecordingState(checkpointEvent);
+    console.log('[WF:checkpoint] console checkpoint saved OK', checkpointEvent.checkpointId);
 
     broadcastToPopup({ type: "CONSOLE_CHECKPOINT_ADDED", label: autoLabel });
     sendResponse({ ok: true, label: autoLabel, checkpointId: checkpointEvent.checkpointId });
   } catch (err) {
+    console.error('[WF:checkpoint] console checkpoint FAILED', err?.message, err);
     sendResponse({ error: err?.message || "Failed to add console checkpoint" });
   }
 }
@@ -1620,41 +1803,79 @@ async function handleAddConsoleCheckpoint(logEntryOrMessage, label, contextBefor
  * @param {string} label - Human-readable name.
  * @param {Function} sendResponse
  */
-async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStatus, networkStatusText, networkRequestHeaders, networkResponseHeaders, networkRequestBody, networkResponseBody, label, checkpointId, checkpointTimestamp, sendResponse) {
+async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStatus, networkStatusText, networkRequestHeaders, networkResponseHeaders, networkRequestBody, networkResponseBody, label, checkpointId, checkpointTimestamp, sendResponse, sourceTab = null) {
   await readyPromise;
-  if (state.mode !== "recording") {
-    sendResponse({ error: "Not recording" });
+
+  console.log('[WF:checkpoint] handleAddNetworkCheckpoint called', {
+    mode: state.mode,
+    sessionId: state.recordingSessionId,
+    networkUrl,
+    networkMethod,
+    networkStatus,
+    hasReqHeaders: !!(networkRequestHeaders && Object.keys(networkRequestHeaders).length),
+    hasResHeaders: !!(networkResponseHeaders && Object.keys(networkResponseHeaders).length),
+    hasReqBody: networkRequestBody != null,
+    hasResBody: networkResponseBody != null,
+    label,
+    checkpointId,
+  });
+
+  if (!state.recordingSessionId) {
+    console.warn('[WF:checkpoint] REJECTED: no recordingSessionId (mode=', state.mode, ')');
+    sendResponse({ error: "No active recording session" });
     return;
   }
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = await resolveCheckpointSourceTab(sourceTab);
   if (!tab) {
+    console.warn('[WF:checkpoint] REJECTED: no active tab');
     sendResponse({ error: "No active tab" });
     return;
   }
 
   try {
+    const sanitizedCall = sanitizeNetworkCallForCheckpoint({
+      url: networkUrl,
+      requestHeaders: networkRequestHeaders,
+      responseHeaders: networkResponseHeaders,
+      requestBody: networkRequestBody,
+      responseBody: networkResponseBody,
+      statusText: networkStatusText,
+    });
+
+    console.log('[WF:checkpoint] sanitizedCall', {
+      url: sanitizedCall.url,
+      hasReqHeaders: !!(sanitizedCall.requestHeaders && Object.keys(sanitizedCall.requestHeaders).length),
+      hasResHeaders: !!(sanitizedCall.responseHeaders && Object.keys(sanitizedCall.responseHeaders).length),
+      hasReqBody: sanitizedCall.requestBody != null,
+      hasResBody: sanitizedCall.responseBody != null,
+    });
+
     const autoLabel = label || `Network: ${networkMethod} ${(networkUrl || "").slice(0, 35)}`;
     const checkpointEvent = {
       type: "network_checkpoint",
       checkpointId: checkpointId || createRecordingSessionId(),
       label: autoLabel,
-      networkUrl,
+      networkUrl: sanitizedCall.url,
       networkMethod,
       networkStatus,
-      networkStatusText: networkStatusText || null,
-      networkRequestHeaders: networkRequestHeaders || null,
-      networkResponseHeaders: networkResponseHeaders || null,
-      networkRequestBody: networkRequestBody || null,
-      networkResponseBody: networkResponseBody || null,
+      networkStatusText: sanitizedCall.statusText || null,
+      networkRequestHeaders: sanitizedCall.requestHeaders || null,
+      networkResponseHeaders: sanitizedCall.responseHeaders || null,
+      networkRequestBody: sanitizedCall.requestBody || null,
+      networkResponseBody: sanitizedCall.responseBody || null,
       url: tab.url,
       timestamp: checkpointTimestamp || Date.now(),
     };
+
+    console.log('[WF:checkpoint] appending network checkpoint', { checkpointId: checkpointEvent.checkpointId, label: autoLabel });
     await appendCheckpointToRecordingState(checkpointEvent);
+    console.log('[WF:checkpoint] network checkpoint saved OK', checkpointEvent.checkpointId);
 
     broadcastToPopup({ type: "NETWORK_CHECKPOINT_ADDED", label: autoLabel });
     sendResponse({ ok: true, label: autoLabel, checkpointId: checkpointEvent.checkpointId });
   } catch (err) {
+    console.error('[WF:checkpoint] network checkpoint FAILED', err?.message, err);
     sendResponse({ error: err?.message || "Failed to add network checkpoint" });
   }
 }
@@ -1699,13 +1920,37 @@ async function deactivateRecorderOnAllTabs() {
 async function broadcastDialogStateToActiveTab() {
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tabs[0]) {
-      chrome.tabs.sendMessage(tabs[0].id, {
-        type: "SYNC_DIALOG_STATE",
-        consoleOpen: state.dialogState.consoleOpen,
-        networkOpen: state.dialogState.networkOpen
-      }).catch(() => {});
+    if (!tabs[0]) return;
+    const tabId = tabs[0].id;
+
+    const dialogOpen = state.dialogState.consoleOpen || state.dialogState.networkOpen;
+    if (dialogOpen) {
+      // Inject the MAIN-world interceptor so fetch/XHR are patched and headers+body
+      // flow into the dialog. Without this, only chrome.webRequest skeleton entries
+      // (no headers, no body) would be stored. The interceptor's __wfInterceptorsInstalled
+      // guard prevents double-patching if it was already injected during recording.
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          files: ["content/page-interceptor.js"],
+          world: "MAIN",
+        });
+        await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          files: ["content/bridge.js"],
+          world: "ISOLATED",
+        });
+        console.log('[WF:sw] interceptor and bridge injected into MAIN/ISOLATED world for tabId', tabId);
+      } catch (err) {
+        console.warn('[WF:sw] Failed to inject page-interceptor.js/bridge.js into tabId', tabId, err?.message);
+      }
     }
+
+    chrome.tabs.sendMessage(tabId, {
+      type: "SYNC_DIALOG_STATE",
+      consoleOpen: state.dialogState.consoleOpen,
+      networkOpen: state.dialogState.networkOpen,
+    }).catch(() => {});
   } catch (e) {}
 }
 
@@ -1731,7 +1976,7 @@ async function activateTabRecorder(tabId, action) {
       files: ["content/logs-dialog.css"],
     });
   } catch (err) {
-    return;
+    return false;
   }
 
   if (action === "start") {
@@ -1749,9 +1994,15 @@ async function activateTabRecorder(tabId, action) {
     // fetch, and XHR on the page itself (invisible to the ISOLATED content script).
     try {
       await chrome.scripting.executeScript({
-        target: { tabId },
+        target: { tabId, allFrames: true },
         files: ["content/page-interceptor.js"],
         world: "MAIN",
+      });
+      // Also inject the bridge to shuttle payload data to the SW
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        files: ["content/bridge.js"],
+        world: "ISOLATED",
       });
     } catch (_) {
       // Restricted pages (chrome://, extensions) will silently fail — that's fine.
@@ -1784,6 +2035,8 @@ async function activateTabRecorder(tabId, action) {
       }
     } catch (_) {}
   }
+
+  return true;
 }
 
 // ─── Network capture via webRequest ──────────────────────────────────────────
@@ -1817,7 +2070,7 @@ chrome.webRequest.onCompleted.addListener(
       timestamp: details.timeStamp,
     });
   },
-  { urls: ["*://*/*", "http://*/*", "https://*/*", "<all_urls>"] }
+  { urls: ["http://*/*", "https://*/*"] }
 );
 
 chrome.webRequest.onErrorOccurred.addListener(
@@ -1829,7 +2082,7 @@ chrome.webRequest.onErrorOccurred.addListener(
       timestamp: details.timeStamp,
     });
   },
-  { urls: ["*://*/*", "http://*/*", "https://*/*", "<all_urls>"] }
+  { urls: ["http://*/*", "https://*/*"] }
 );
 
 // ─── Tab switch tracking ──────────────────────────────────────────────────────
@@ -1847,6 +2100,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
+    state.recordingTabId = activeInfo.tabId;
     state.events.push({
       type: "tab_switch",
       tabId: activeInfo.tabId,
@@ -1868,11 +2122,42 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
  * the original injected script content is purged by the browser. This listener detects that purge and 
  * synchronously reactivates the recorder to resume tracking.
  */
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+async function injectDashboardAuthBridge(tabId, url) {
+  if (!tabId || !isDashboardUrl(url)) return;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content/auth-bridge.js"],
+    });
+  } catch (_) {}
+}
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete") {
+    await injectDashboardAuthBridge(tabId, changeInfo.url || tab?.url || "");
+  }
   if (state.mode !== "recording") return;
   if (changeInfo.status !== "complete") return;
+  if (tabId !== state.recordingTabId) return;
 
   await activateTabRecorder(tabId, "start");
+});
+
+/**
+ * On Tab Removed listener
+ *
+ * Strategy:
+ * Garbage-collects in-memory dictionaries keyed by tabId whenever a tab is closed.
+ * Without this, the `consoleLogs`, `networkCalls`, and `networkClearCutoffs` maps
+ * accumulate "ghost" entries for every tab the user has ever opened, causing the
+ * Service Worker heap to grow without bound and `chrome.storage.session` (1 MB quota)
+ * to fill with stale data, leading to silent QuotaExceeded errors and eventual crashes.
+ */
+chrome.tabs.onRemoved.addListener((tabId) => {
+  delete state.consoleLogs[tabId];
+  delete state.networkCalls[tabId];
+  delete state.networkClearCutoffs[tabId];
+  debug("[WF:gc] Cleaned up state for closed tab", tabId);
 });
 
 /**
@@ -1884,6 +2169,20 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
  */
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (state.mode !== "recording") return;
+  // If this navigation is within the recording tab, inject interceptors ASAP exactly at document_start.
+  if (details.tabId === state.recordingTabId) {
+    chrome.scripting.executeScript({
+      target: { tabId: details.tabId, frameIds: [details.frameId] },
+      files: ["content/page-interceptor.js"],
+      world: "MAIN",
+    }).catch(() => {});
+    chrome.scripting.executeScript({
+      target: { tabId: details.tabId, frameIds: [details.frameId] },
+      files: ["content/bridge.js"],
+      world: "ISOLATED",
+    }).catch(() => {});
+  }
+
   if (details.frameId !== 0) return;
   if (details.transitionType === "reload") {
      state.events.push({
@@ -2339,17 +2638,18 @@ async function saveToDashboard(events, screenshots, checkpointsOverride = null) 
   const headers = await getDashboardRequestHeaders();
   const name = state.workflowName || ('recorded-workflow-' + new Date().toISOString().slice(0, 16).replace('T', ' '));
   const screenshotMap = {};
+  const safeEvents = Array.isArray(events) ? events.map(sanitizeEventForStorage) : [];
   const checkpointSource = Array.isArray(checkpointsOverride) && checkpointsOverride.length > 0
     ? checkpointsOverride
-    : (Array.isArray(events)
-      ? events
+    : (Array.isArray(safeEvents)
+      ? safeEvents
         .filter((event) =>
           event?.type === "checkpoint" ||
           event?.type === "console_checkpoint" ||
           event?.type === "network_checkpoint"
         )
       : []);
-  const checkpoints = checkpointSource.map((event, index) => ({
+  const checkpoints = checkpointSource.map((event, index) => sanitizeCheckpointForStorage({
           index,
           checkpointId: event.checkpointId ?? null,
           type: event.type,
@@ -2380,7 +2680,7 @@ async function saveToDashboard(events, screenshots, checkpointsOverride = null) 
   const res = await fetch(`${DASHBOARD_URL}/api/workflows`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ name, events, screenshots: screenshotMap, checkpoints }),
+    body: JSON.stringify({ name, events: safeEvents, screenshots: screenshotMap, checkpoints }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
@@ -2773,29 +3073,31 @@ async function dispatchPlaybackEvent(event, results, meta) {
       }
 
       const idx = state.screenshotCount++;
+      const safeMatchedCall = sanitizeNetworkCall(matchedCall || null);
+      const safeExpectedCall = sanitizeCheckpointForStorage(event);
       results.checkpoints[idx] = {
         label: event.label,
         checkpointType: "network",
         dataUrl: null,
         capturedData: JSON.stringify({
           matched: !!matchedCall,
-          expectedUrl: event.networkUrl ?? null,
-          expectedMethod: event.networkMethod ?? null,
-          expectedStatus: event.networkStatus ?? null,
-          expectedStatusText: event.networkStatusText ?? null,
-          expectedRequestHeaders: event.networkRequestHeaders ?? null,
-          expectedResponseHeaders: event.networkResponseHeaders ?? null,
-          expectedRequestBody: event.networkRequestBody ?? null,
-          expectedResponseBody: event.networkResponseBody ?? null,
-          capturedUrl: matchedCall?.url ?? null,
-          capturedMethod: matchedCall?.method ?? null,
-          capturedStatus: matchedCall?.status ?? null,
-          capturedStatusText: matchedCall?.statusText ?? null,
-          requestHeaders: matchedCall?.requestHeaders ?? null,
-          responseHeaders: matchedCall?.responseHeaders ?? null,
-          requestBody: matchedCall?.requestBody ?? null,
-          responseBody: matchedCall?.responseBody ?? null,
-          capturedTimestamp: matchedCall?.timestamp ?? null,
+          expectedUrl: safeExpectedCall.networkUrl ?? null,
+          expectedMethod: safeExpectedCall.networkMethod ?? null,
+          expectedStatus: safeExpectedCall.networkStatus ?? null,
+          expectedStatusText: safeExpectedCall.networkStatusText ?? null,
+          expectedRequestHeaders: safeExpectedCall.networkRequestHeaders ?? null,
+          expectedResponseHeaders: safeExpectedCall.networkResponseHeaders ?? null,
+          expectedRequestBody: safeExpectedCall.networkRequestBody ?? null,
+          expectedResponseBody: safeExpectedCall.networkResponseBody ?? null,
+          capturedUrl: safeMatchedCall?.url ?? null,
+          capturedMethod: safeMatchedCall?.method ?? null,
+          capturedStatus: safeMatchedCall?.status ?? null,
+          capturedStatusText: safeMatchedCall?.statusText ?? null,
+          requestHeaders: safeMatchedCall?.requestHeaders ?? null,
+          responseHeaders: safeMatchedCall?.responseHeaders ?? null,
+          requestBody: safeMatchedCall?.requestBody ?? null,
+          responseBody: safeMatchedCall?.responseBody ?? null,
+          capturedTimestamp: safeMatchedCall?.timestamp ?? null,
         }),
       };
       broadcastToPopup({ type: "CHECKPOINT_REACHED", index: idx, label: event.label, checkpointType: "network" });

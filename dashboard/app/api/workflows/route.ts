@@ -5,6 +5,27 @@ import {
   listWorkflowSummariesForUser,
   normalizeWorkflowDynamicInputs,
 } from '@/lib/data'
+import {
+  readJsonBodyWithLimit,
+  RequestBodyLimitError,
+  RequestBodyParseError,
+} from '@/lib/request-body'
+
+// ---------------------------------------------------------------------------
+// Route-segment config
+// ---------------------------------------------------------------------------
+// Enforce a strict 10 MB body-size limit on this route.  Next.js rejects any
+// request whose Content-Length (or actual streamed size) exceeds this value
+// and returns a 413 before `req.json()` is ever called, preventing the
+// unbounded-JSON-parsing OOM/DoS described in:
+//   https://nextjs.org/docs/app/api-reference/file-conventions/route-segment-config#bodyszelimit
+export const maxDuration = 30  // seconds — keeps lambda warm-start budget sane
+export const dynamic = 'force-dynamic'
+
+// The body-size cap.  10 MB is generous for real workflow uploads (events +
+// a handful of base64 screenshots) while rejecting astronomical payloads
+// crafted to exhaust Node.js heap.
+export const fetchCache = 'force-no-store'
 
 interface CheckpointInput {
   checkpointId?: string | null
@@ -150,17 +171,45 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/workflows — create workflow + recording screenshots
+const MAX_BODY_BYTES = 10 * 1024 * 1024 // 10 MB
+
 export async function POST(req: NextRequest) {
   const session = await getRequestSession(req)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const body = await req.json() as {
+  // Defence-in-depth: reject oversized bodies before JSON parsing begins.
+  // The route-segment `config.api.bodyParser.sizeLimit` handles the common
+  // case; this guard catches streaming clients that omit Content-Length or
+  // whose actual body exceeds the declared size.
+  const contentLength = req.headers.get('content-length')
+  if (contentLength !== null && Number(contentLength) > MAX_BODY_BYTES) {
+    return NextResponse.json(
+      { error: 'Payload Too Large — maximum upload size is 10 MB' },
+      { status: 413 },
+    )
+  }
+
+  let body: {
     name?: string
     recordedAt?: string
     events?: unknown
     dynamicInputs?: unknown
     screenshots?: Record<string, unknown> | null
     checkpoints?: unknown
+  }
+  try {
+    body = await readJsonBodyWithLimit<typeof body>(req, MAX_BODY_BYTES)
+  } catch (error) {
+    if (error instanceof RequestBodyLimitError) {
+      return NextResponse.json(
+        { error: 'Payload Too Large — maximum upload size is 10 MB' },
+        { status: 413 },
+      )
+    }
+    if (error instanceof RequestBodyParseError) {
+      return NextResponse.json({ error: error.message }, { status: 400 })
+    }
+    throw error
   }
   const { name, recordedAt, events, dynamicInputs, screenshots, checkpoints } = body
   const normalizedEvents = normalizeEvents(

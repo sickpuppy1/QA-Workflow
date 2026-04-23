@@ -45,10 +45,26 @@
   }
 
   function pushNet(entry) {
+    console.log('[WF:interceptor] pushNet', {
+      url: entry.url,
+      method: entry.method,
+      status: entry.status,
+      hasReqHeaders: !!(entry.requestHeaders && Object.keys(entry.requestHeaders).length),
+      hasResHeaders: !!(entry.responseHeaders && Object.keys(entry.responseHeaders).length),
+      hasReqBody: entry.requestBody != null,
+      hasResBody: entry.responseBody != null,
+    });
     // M3: Use same-origin target instead of "*" to prevent eavesdropping.
     window.postMessage({ __wfSrc: "__wf_interceptor__", type: "network_call", ...entry }, window.location.origin || "*");
     // CustomEvent → stays in MAIN world (playback checkpoint watchers)
     window.dispatchEvent(new CustomEvent("__wf_network_call__", { detail: entry }));
+  }
+
+  function publishUpdatedNet(entry) {
+    pushNet({
+      ...entry,
+      timestamp: entry.timestamp,
+    });
   }
 
   // ─── Clear commands from isolated world (logs-dialog.js clear button) ────────
@@ -114,7 +130,7 @@
     const _orig = console[level];
     console[level] = function (...args) {
       _orig.apply(console, args);
-      if (!window.__wfRecording || __wfCapturing) return;
+      if (__wfCapturing) return;
       __wfCapturing = true;
       try {
         const message = args.map(a => {
@@ -136,7 +152,6 @@
     const requestHeaders = headersToObj((init && init.headers) || (input instanceof Request ? input.headers : null));
     const requestBody    = serializeBody((init && init.body) || null);
     return _origFetch.apply(this, arguments).then((response) => {
-      if (!window.__wfRecording) return response;
 
       const resHeaders = headersToObj(response.headers);
       const resStatus = response.status;
@@ -158,26 +173,68 @@
       // Push it to the UI immediately
       pushNet(entry);
 
-      // Try to backfill the body asynchronously
+      // Try to backfill the body asynchronously.
+      // SECURITY FIX: Do NOT use cloned.text() — it buffers the ENTIRE payload
+      // into a UTF-16 string before slicing, causing OOM crashes on large files
+      // (videos, PDFs, ISOs, etc.). Instead, use the ReadableStream API to read
+      // only the first MAX_BODY bytes and immediately cancel the stream.
       try {
-        const cloned = response.clone();
-        setTimeout(() => {
-          cloned.text().then((text) => {
-            if (text) {
-              entry.responseBody = text.slice(0, MAX_BODY);
-              // Fire an update event specifically for the body if needed, 
-              // or just rely on the in-page buffer being updated by reference.
-              // For simplicity, we just update the entry in the buffer.
-            }
-          }).catch(() => {});
-        }, 0);
+        const contentLength = parseInt(response.headers.get("content-length") || "0", 10);
+        const contentType   = (response.headers.get("content-type") || "").toLowerCase();
+        // Skip body capture for clearly non-text or very large responses.
+        const isBinaryType = /(image|audio|video|font|octet-stream|pdf|zip|gzip|protobuf)/.test(contentType);
+        if (!isBinaryType && (contentLength === 0 || contentLength <= MAX_BODY * 4)) {
+          const cloned = response.clone();
+          const reader = cloned.body && cloned.body.getReader();
+          if (reader) {
+            const chunks = [];
+            let totalBytes = 0;
+            const pump = () => reader.read().then(({ done, value }) => {
+              if (done || !value) {
+                // Decode collected bytes and store
+                try {
+                  const merged = new Uint8Array(totalBytes);
+                  let offset = 0;
+                  for (const c of chunks) { merged.set(c, offset); offset += c.length; }
+                  entry.responseBody = new TextDecoder("utf-8", { fatal: false }).decode(merged);
+                } catch (_) {}
+                publishUpdatedNet(entry);
+                return;
+              }
+              totalBytes += value.length;
+              if (totalBytes <= MAX_BODY) {
+                chunks.push(value);
+                return pump();
+              }
+              // Collected enough — take only what we need and cancel.
+              chunks.push(value.slice(0, MAX_BODY - (totalBytes - value.length)));
+              reader.cancel().catch(() => {});
+              try {
+                const needed = MAX_BODY;
+                const merged = new Uint8Array(needed);
+                let offset = 0;
+                for (const c of chunks) {
+                  const take = Math.min(c.length, needed - offset);
+                  merged.set(c.subarray(0, take), offset);
+                  offset += take;
+                  if (offset >= needed) break;
+                }
+                entry.responseBody = new TextDecoder("utf-8", { fatal: false }).decode(merged);
+              } catch (_) {}
+              publishUpdatedNet(entry);
+            }).catch(() => { reader.cancel().catch(() => {}); });
+            pump();
+          } else {
+            publishUpdatedNet(entry);
+          }
+        } else {
+          publishUpdatedNet(entry);
+        }
       } catch (_) {}
 
       return response;
     }).catch((err) => {
-      if (window.__wfRecording) {
-        pushNet({ url, method, requestHeaders, requestBody, status: 0, statusText: "NetworkError", responseHeaders: {}, responseBody: null, timestamp: Date.now() });
-      }
+      pushNet({ url, method, requestHeaders, requestBody, status: 0, statusText: "NetworkError", responseHeaders: {}, responseBody: null, timestamp: Date.now() });
       throw err;
     });
   };
@@ -190,20 +247,36 @@
 
   XMLHttpRequest.prototype.open = function (method, url) {
     this.__wfMethod  = (method || "GET").toUpperCase();
-    this.__wfUrl     = url || "";
+    this.__wfUrl     = String(url || "");
     this.__wfReqHdrs = {};
     return _origOpen.apply(this, arguments);
   };
 
   XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
-    if (this.__wfReqHdrs) this.__wfReqHdrs[name] = value;
+    // Initialize headers map here too, in case open() was pre-injection
+    if (!this.__wfReqHdrs) this.__wfReqHdrs = {};
+    this.__wfReqHdrs[name] = value;
     return _origSetHeader.apply(this, arguments);
   };
 
   XMLHttpRequest.prototype.send = function (body) {
+    // If open() ran before injection, __wfUrl will be missing.
+    // Use responseURL as a post-hoc fallback (available in loadend).
+    if (!this.__wfReqHdrs) this.__wfReqHdrs = {};
     const requestBody = serializeBody(body);
+    const capturedMethod = this.__wfMethod || "GET";
+
+    console.log('[WF:interceptor] XHR.send called', {
+      url: this.__wfUrl || '(not set — open() was pre-injection)',
+      method: capturedMethod,
+      hasBody: requestBody != null,
+      reqHeaders: Object.keys(this.__wfReqHdrs),
+    });
+
     this.addEventListener("loadend", () => {
-      if (!window.__wfRecording) return;
+      // Post-hoc URL recovery: responseURL is available after the request completes.
+      // If open() ran before injection, __wfUrl may be empty — use responseURL instead.
+      const finalUrl = this.__wfUrl || this.responseURL || "";
 
       let responseBody = null;
       try {
@@ -222,9 +295,19 @@
         });
       } catch (_) {}
 
+      console.log('[WF:interceptor] XHR loadend', {
+        url: finalUrl,
+        method: capturedMethod,
+        status: this.status,
+        hasReqHeaders: Object.keys(this.__wfReqHdrs || {}).length > 0,
+        hasResHeaders: Object.keys(responseHeaders).length > 0,
+        hasReqBody: requestBody != null,
+        hasResBody: responseBody != null,
+      });
+
       pushNet({
-        url: this.__wfUrl || "",
-        method: this.__wfMethod || "GET",
+        url: finalUrl,
+        method: capturedMethod,
         requestHeaders: this.__wfReqHdrs || {},
         requestBody,
         status: this.status,

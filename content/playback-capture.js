@@ -129,13 +129,55 @@
 
       pushNet(entry);
 
+      // SECURITY FIX: Do NOT use cloned.text() — it buffers the ENTIRE payload
+      // into a UTF-16 string before slicing, causing OOM crashes on large files
+      // (videos, PDFs, ISOs, etc.). Instead, use the ReadableStream API to read
+      // only the first MAX_BODY bytes and immediately cancel the stream.
       try {
-        const cloned = response.clone();
-        setTimeout(() => {
-          cloned.text().then((text) => {
-            if (text) entry.responseBody = text.slice(0, MAX_BODY);
-          }).catch(() => {});
-        }, 0);
+        const contentLength = parseInt(response.headers.get("content-length") || "0", 10);
+        const contentType   = (response.headers.get("content-type") || "").toLowerCase();
+        // Skip body capture for clearly non-text or very large responses.
+        const isBinaryType = /(image|audio|video|font|octet-stream|pdf|zip|gzip|protobuf)/.test(contentType);
+        if (!isBinaryType && (contentLength === 0 || contentLength <= MAX_BODY * 4)) {
+          const cloned = response.clone();
+          const reader = cloned.body && cloned.body.getReader();
+          if (reader) {
+            const chunks = [];
+            let totalBytes = 0;
+            const pump = () => reader.read().then(({ done, value }) => {
+              if (done || !value) {
+                try {
+                  const merged = new Uint8Array(totalBytes);
+                  let offset = 0;
+                  for (const c of chunks) { merged.set(c, offset); offset += c.length; }
+                  entry.responseBody = new TextDecoder("utf-8", { fatal: false }).decode(merged);
+                } catch (_) {}
+                return;
+              }
+              totalBytes += value.length;
+              if (totalBytes <= MAX_BODY) {
+                chunks.push(value);
+                return pump();
+              }
+              // Collected enough — take only what we need and cancel.
+              chunks.push(value.slice(0, MAX_BODY - (totalBytes - value.length)));
+              reader.cancel().catch(() => {});
+              try {
+                const needed = MAX_BODY;
+                const merged = new Uint8Array(needed);
+                let offset = 0;
+                for (const c of chunks) {
+                  const take = Math.min(c.length, needed - offset);
+                  merged.set(c.subarray(0, take), offset);
+                  offset += take;
+                  if (offset >= needed) break;
+                }
+                entry.responseBody = new TextDecoder("utf-8", { fatal: false }).decode(merged);
+              } catch (_) {}
+            }).catch(() => { reader.cancel().catch(() => {}); });
+            pump();
+          }
+        }
       } catch (_) {}
 
       return response;

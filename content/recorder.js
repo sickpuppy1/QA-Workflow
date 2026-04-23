@@ -18,6 +18,19 @@
     // Context invalidated
   }
   if (window.__workflowRecorderLoaded && runtimeConnected) {
+    // Already loaded in this page context. Re-sync recording state in case
+    // recording was started AFTER this script was first injected (e.g., the
+    // extension was reloaded or a new recording session started on an existing tab).
+    try {
+      chrome.storage.local.get("wfMode").then((data) => {
+        if (data.wfMode === "recording") {
+          // Retrieve the exposed API set up by our own first injection.
+          if (window.__wfRecorder && typeof window.__wfRecorder.start === "function") {
+            window.__wfRecorder.start();
+          }
+        }
+      }).catch(() => {});
+    } catch (_) {}
     return;
   }
   window.__workflowRecorderLoaded = true;
@@ -451,6 +464,7 @@
     if (e.target.closest?.("#__wf_console_dialog__") || e.target.closest?.("#__wf_network_dialog__")) return;
     const el = e.target;
     if (el.tagName === "INPUT" && (el.type === "checkbox" || el.type === "radio")) return;
+    if (isSensitiveInput(el)) return;
     
     const key = generateSelector(el);
     clearTimeout(inputDebounce.get(key));
@@ -480,6 +494,7 @@
     if (e.target.closest?.("#__wf_console_dialog__") || e.target.closest?.("#__wf_network_dialog__")) return;
     const el = e.target;
     if (el.tagName === "INPUT" && el.type === "text") return;
+    if (isSensitiveInput(el)) return;
     
     const isCheckOrRadio = el.tagName === "INPUT" && (el.type === "checkbox" || el.type === "radio");
     sendEvent({
@@ -490,6 +505,33 @@
       inputType: el.getAttribute?.("type") || null,
       timestamp: Date.now(), url: location.href,
     });
+  }
+
+  function isSensitiveInput(el) {
+    if (!el || typeof el !== "object") return false;
+
+    const type = String(el.getAttribute?.("type") || "").toLowerCase();
+    const autocomplete = String(el.getAttribute?.("autocomplete") || "").toLowerCase();
+    if (
+      type === "password" ||
+      autocomplete === "current-password" ||
+      autocomplete === "new-password" ||
+      autocomplete === "one-time-code"
+    ) {
+      return true;
+    }
+
+    const textHints = [
+      el.getAttribute?.("name"),
+      el.getAttribute?.("id"),
+      el.getAttribute?.("placeholder"),
+      el.getAttribute?.("aria-label"),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    return /(pass(word)?|otp|one[- ]time|token|secret|api[-_ ]?key|session|cookie|cvv|cvc|ssn|social security)/i.test(textHints);
   }
 
   /**
@@ -574,7 +616,7 @@
    */
 
   const WF_DIALOG_STYLE = `
-    position:fixed;inset:0;z-index:2147483646;
+    position:fixed;inset:0;z-index:2147483649;
     background:rgba(0,0,0,0.55);
     display:flex;align-items:center;justify-content:center;
   `;
@@ -1103,43 +1145,58 @@
    * prevents cross-talk with unrelated postMessage traffic on the page.
    */
   window.addEventListener("message", (e) => {
-    if (!isRecording) return;
-    // M3: Only accept messages from the same origin (MAIN-world interceptor on same page).
-    // Prevents cross-origin iframes or pages from injecting fake recording events.
     if (e.origin !== window.location.origin) return;
     if (!e.data || e.data.__wfSrc !== "__wf_interceptor__") return;
+    // Only forward during an active recording. Check both the in-memory flag
+    // and chrome.storage as a fallback — the flag can be stale if the guard
+    // fired on re-injection and startListening() wasn't called yet.
+    if (!isRecording) {
+      // Fast async check — if storage says we're recording, set the flag and proceed.
+      try {
+        chrome.storage.local.get("wfMode").then((data) => {
+          if (data.wfMode === "recording") {
+            isRecording = true;
+            forwardInterceptorMessage(e.data);
+          }
+        }).catch(() => {});
+      } catch (_) {}
+      return;
+    }
+    forwardInterceptorMessage(e.data);
+  });
 
+  function forwardInterceptorMessage(data) {
     try {
-      if (e.data.type === "console_log") {
+      if (data.type === "console_log") {
         chrome.runtime.sendMessage({
           type: "RECORD_CONSOLE_LOG",
           log: {
-            message: e.data.message,
-            level: e.data.level || "log",
-            timestamp: e.data.timestamp,
+            message: data.message,
+            level: data.level || "log",
+            timestamp: data.timestamp,
             url: window.location.href,
           },
         });
-      } else if (e.data.type === "network_call") {
+      } else if (data.type === "network_call") {
         // Forward network calls captured by MAIN-world fetch/XHR patching.
         // This carries requestBody which chrome.webRequest cannot provide.
         chrome.runtime.sendMessage({
           type: "RECORD_NETWORK_CALL_WITH_BODY",
           call: {
-            url: e.data.url,
-            method: e.data.method,
-            status: e.data.status,
-            statusText: e.data.statusText || null,
-            requestHeaders: e.data.requestHeaders || null,
-            requestBody: e.data.requestBody || null,
-            responseHeaders: e.data.responseHeaders || null,
-            responseBody: e.data.responseBody || null,
-            timestamp: e.data.timestamp,
+            url: data.url,
+            method: data.method,
+            status: data.status,
+            statusText: data.statusText || null,
+            requestHeaders: data.requestHeaders || null,
+            requestBody: data.requestBody || null,
+            responseHeaders: data.responseHeaders || null,
+            responseBody: data.responseBody || null,
+            timestamp: data.timestamp,
             tabUrl: window.location.href,
           },
         });
       }
     } catch (_) {}
-  });
+  }
 
 })();

@@ -2,6 +2,8 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
+import { ArrowLeft } from 'lucide-react'
 
 /** Auth UI: sign-in and sign-up tabs posting to Next API routes. */
 export default function LoginPage() {
@@ -66,6 +68,9 @@ export default function LoginPage() {
 
   return (
     <div className="login-page">
+      <Link href="/landing" className="back-to-landing">
+        <ArrowLeft size={16} /> Back to Home
+      </Link>
       <div className="login-card">
         <img src="/icon.svg" alt="Logo" className="login-logo-img" />
         <div className="login-title">Workflow Recorder</div>

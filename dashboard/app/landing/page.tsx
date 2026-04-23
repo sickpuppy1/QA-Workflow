@@ -1214,6 +1214,8 @@ export default function LandingPage() {
         <footer className="lp-footer">
           <span style={{ color: C.violetL, fontWeight: 600 }}>Workflow Automator</span>
           {' '}· Built for teams that ship fast ·{' '}
+          <Link href="/privacy" style={{ color: C.muted, textDecoration: 'underline' }}>Privacy</Link> ·{' '}
+          <Link href="/contact" style={{ color: C.muted, textDecoration: 'underline' }}>Contact</Link> ·{' '}
           <Link href="/login" style={{ color: C.muted, textDecoration: 'underline' }}>Dashboard</Link>
         </footer>
 

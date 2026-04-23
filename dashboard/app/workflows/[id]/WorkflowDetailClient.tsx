@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
+import { ChevronLeft, ChevronRight, Shield, Mail } from 'lucide-react'
 
 // ─── Event type helpers ───────────────────────────────────────────────────────
 
@@ -233,11 +234,29 @@ function detectDynamicSuggestions(events: any[]): DynamicSuggestion[] {
 export default function WorkflowDetailClient({
   workflow,
   dynamicBindingEnabled,
+  runsPage,
+  totalRuns,
+  runsPageSize,
+  userEmail,
 }: {
   workflow: Workflow
   dynamicBindingEnabled: boolean
+  runsPage: number
+  totalRuns: number
+  runsPageSize: number
+  userEmail: string
 }) {
   const router = useRouter()
+
+  /** Ends the session via the logout API and sends the user to `/landing`. */
+  async function handleLogout() {
+    await fetch('/api/auth/logout', { method: 'POST' })
+    try {
+      window.postMessage({ __wfSrc: '__wf_dashboard_auth__', type: 'CLEAR_TOKEN' }, window.location.origin)
+    } catch (_) {}
+    router.push('/landing')
+  }
+
   const [selectedImg, setSelectedImg] = useState<Screenshot | null>(null)
   const [dynamicDraft, setDynamicDraft] = useState<DynamicInputs>(() =>
     normalizeDynamicInputs(workflow.dynamicInputs)
@@ -479,11 +498,34 @@ export default function WorkflowDetailClient({
           </svg>
           Settings
         </Link>
+        <Link href="/privacy" className="nav-item">
+          <Shield className="nav-icon" size={18} />
+          Privacy
+        </Link>
+        <Link href="/contact" className="nav-item">
+          <Mail className="nav-icon" size={18} />
+          Contact Support
+        </Link>
         <div className="nav-item active">
           <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
           </svg>
           Detail View
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        <div style={{ padding: '12px 8px', borderTop: '1px solid var(--border)', marginTop: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+            Signed in as<br />
+            <span style={{ color: 'var(--text)', fontWeight: 600 }}>{userEmail}</span>
+          </div>
+          <button id="logout-btn" className="btn btn-danger" style={{ width: '100%', justifyContent: 'center' }} onClick={handleLogout}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            Sign Out
+          </button>
         </div>
       </nav>
 
@@ -981,8 +1023,104 @@ export default function WorkflowDetailClient({
               })}
             </div>
           )}
+
+          {/* Runs Pagination */}
+          {totalRuns > runsPageSize && (
+            <div className="pagination-wrap" style={{ marginTop: 24 }}>
+              <div className="pagination-container">
+                <button
+                  className="pagination-btn"
+                  onClick={() => router.push(`/workflows/${workflow.id}?runsPage=${runsPage - 1}`)}
+                  disabled={runsPage <= 1}
+                >
+                  <ChevronLeft size={16} />
+                  <span>Previous</span>
+                </button>
+
+                <div className="pagination-info">
+                  <span className="current-page">{runsPage}</span>
+                  <span className="separator">/</span>
+                  <span className="total-pages">{Math.ceil(totalRuns / runsPageSize)}</span>
+                </div>
+
+                <button
+                  className="pagination-btn"
+                  onClick={() => router.push(`/workflows/${workflow.id}?runsPage=${runsPage + 1}`)}
+                  disabled={runsPage >= Math.ceil(totalRuns / runsPageSize)}
+                >
+                  <span>Next</span>
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </main>
+
+      <style jsx global>{`
+        .pagination-wrap {
+          display: flex;
+          justify-content: center;
+        }
+        .pagination-container {
+          display: flex;
+          align-items: center;
+          gap: 16px;
+          background: rgba(255, 255, 255, 0.03);
+          backdrop-filter: blur(12px);
+          padding: 8px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        .pagination-btn {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          background: none;
+          border: none;
+          color: var(--text-muted);
+          font-size: 13px;
+          font-weight: 500;
+          cursor: pointer;
+          padding: 8px 16px;
+          border-radius: 999px;
+          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .pagination-btn:hover:not(:disabled) {
+          background: rgba(124, 58, 237, 0.15);
+          color: var(--accent-light);
+          transform: translateY(-1px);
+        }
+        .pagination-btn:active:not(:disabled) {
+          transform: translateY(0);
+        }
+        .pagination-btn:disabled {
+          opacity: 0.3;
+          cursor: not-allowed;
+        }
+        .pagination-info {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-family: 'JetBrains Mono', monospace;
+          background: rgba(255, 255, 255, 0.05);
+          padding: 6px 14px;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.05);
+          font-size: 13px;
+        }
+        .current-page {
+          color: var(--accent-light);
+          font-weight: 700;
+        }
+        .separator {
+          color: rgba(255, 255, 255, 0.2);
+        }
+        .total-pages {
+          color: var(--text-muted);
+        }
+      `}</style>
 
       {/* Lightbox */}
       {selectedImg && (

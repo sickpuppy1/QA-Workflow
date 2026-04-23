@@ -629,6 +629,11 @@ export async function countPlaybackRunsForUser(userId: string) {
   return playbackRuns.countDocuments({ userId })
 }
 
+export async function countPlaybackRunsForWorkflow(workflowId: string, userId: string) {
+  const { playbackRuns } = await getCollections()
+  return playbackRuns.countDocuments({ workflowId, userId })
+}
+
 export async function countPlaybackCheckpoints() {
   const { playbackCheckpoints } = await getCollections()
   return playbackCheckpoints.countDocuments()
@@ -672,14 +677,14 @@ export async function getWorkflowDetail(id: string) {
   } satisfies WorkflowDetail
 }
 
-export async function getWorkflowDetailForUser(id: string, userId: string) {
+export async function getWorkflowDetailForUser(id: string, userId: string, runsSkip = 0, runsLimit = 30) {
   const { workflows, recordingScreenshots, playbackRuns } = await getCollections()
   const workflow = await workflows.findOne({ _id: id, userId })
   if (!workflow) return null
 
   const [screenshots, runs] = await Promise.all([
     recordingScreenshots.find({ workflowId: id }).sort({ index: 1 }).toArray(),
-    playbackRuns.find({ workflowId: id, userId }).sort({ playedAt: -1 }).toArray(),
+    playbackRuns.find({ workflowId: id, userId }).sort({ playedAt: -1 }).skip(runsSkip).limit(runsLimit).toArray(),
   ])
 
   const checkpointCounts = await getCheckpointCountsByRunId(runs.map((run) => run._id))

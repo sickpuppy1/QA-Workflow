@@ -411,6 +411,26 @@ select.input {
   justify-content: center;
   background: var(--bg);
   background-image: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(124, 58, 237, 0.15), transparent);
+  position: relative;
+}
+
+.back-to-landing {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-muted);
+  transition: var(--transition, all 0.15s);
+  font-weight: 500;
+  z-index: 10;
+}
+
+.back-to-landing:hover {
+  color: var(--text);
+  transform: translateX(-2px);
 }
 
 .login-card {

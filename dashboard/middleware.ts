@@ -20,7 +20,14 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname
   const isApiRoute = path.startsWith('/api/')
 
-  if (path === '/' || path === '/login' || path === '/landing' || path === '/uninstall') {
+  if (
+    path === '/' ||
+    path === '/login' ||
+    path === '/landing' ||
+    path === '/uninstall' ||
+    path === '/privacy' ||
+    path === '/contact'
+  ) {
     return NextResponse.next()
   }
 

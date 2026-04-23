@@ -177,6 +177,14 @@ export default function PrivacyPage() {
           pointer-events: none;
           z-index: 0;
         }
+
+        @media (max-width: 600px) {
+          .container { padding: 40px 16px; }
+          .hero-title { font-size: clamp(28px, 8vw, 42px); margin-bottom: 8px; }
+          .glass-card { padding: 24px; border-radius: 16px; }
+          .section-title { font-size: 18px; }
+          .section-content { font-size: 14px; }
+        }
       `}</style>
 
       <div className="glow" />

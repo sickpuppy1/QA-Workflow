@@ -20,9 +20,8 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname
   const isApiRoute = path.startsWith('/api/')
 
+  // 1. Whitelist public landing/legal pages
   if (
-    path === '/' ||
-    path === '/login' ||
     path === '/landing' ||
     path === '/uninstall' ||
     path === '/privacy' ||
@@ -31,61 +30,57 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next()
   }
 
-  // Get token
+  // 2. Identify the user
   const authHeader = request.headers.get('authorization')
   let token = null
-  
   if (authHeader && authHeader.toLowerCase().startsWith('bearer ')) {
     token = authHeader.split(' ')[1]
   } else {
     token = request.cookies.get('wa_session')?.value
   }
 
-  // Verify
-  if (!token) {
-    if (isApiRoute) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const session = token ? await verifySessionToken(token) : null
+
+  // 3. Handle Auth & Root behavior
+  if (path === '/login') {
+    if (session) {
+      // Already logged in? Take them to the dashboard.
+      return NextResponse.redirect(new URL('/', request.url))
     }
-    return NextResponse.redirect(new URL('/', request.url))
+    return NextResponse.next()
   }
 
-  const session = await verifySessionToken(token)
+  if (path === '/') {
+    // Root dashboard handles its own "Landing vs Dashboard" logic in app/page.tsx
+    return NextResponse.next()
+  }
+
+  // 4. Authenticate all other routes (workflows, settings, etc.)
   if (!session) {
     if (isApiRoute) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
-    return NextResponse.redirect(new URL('/', request.url))
+    // Deep-links to dashboard should prompt login
+    return NextResponse.redirect(new URL('/login', request.url))
   }
 
-  // ---------------------------------------------------------------------------
-  // Body-size guard (Edge layer — cheapest rejection point).
-  // Reject POST requests to /api/workflows before they reach the Node.js
-  // runtime.  An attacker sending a giant payload is stopped here, so the V8
-  // heap inside the lambda is never touched.
-  // ---------------------------------------------------------------------------
-  const MAX_UPLOAD_BYTES = 10 * 1024 * 1024 // 10 MB
+  // 5. Body-size guard
+  const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
   if (
     request.method === 'POST' &&
     path.startsWith('/api/workflows') &&
-    !path.startsWith('/api/workflows/')  // exclude nested sub-routes if any
+    !path.startsWith('/api/workflows/')
   ) {
     const contentLength = request.headers.get('content-length')
     if (contentLength !== null && Number(contentLength) > MAX_UPLOAD_BYTES) {
       return NextResponse.json(
-        { error: 'Payload Too Large — maximum upload size is 10 MB' },
+        { error: 'Payload Too Large' },
         { status: 413 },
       )
     }
   }
 
-  // Success — write identity onto the *forwarded request*, not the response.
-  // Using NextResponse.next({ request: { headers } }) is the only way to
-  // mutate headers that downstream API routes will actually see.  Setting
-  // headers on the NextResponse object itself only affects the browser
-  // response, leaving the original (potentially spoofed) request headers
-  // intact.  See: https://nextjs.org/docs/app/building-your-application/routing/middleware#setting-headers
   const requestHeaders = new Headers(request.headers)
-  // Overwrite any attacker-supplied values with the server-verified ones.
   requestHeaders.set('X-User-Id', session.userId)
   requestHeaders.set('X-User-Email', session.email)
 
@@ -95,4 +90,3 @@ export async function middleware(request: NextRequest) {
     },
   })
 }
-

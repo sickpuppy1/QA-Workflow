@@ -434,7 +434,7 @@ export default function ComparisonClient({ run, workflowId }: { run: Run; workfl
           <span><span style={{ color: '#86efac', marginRight: 4 }}>●</span>Only in Captured</span>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+        <div className="compare-grid" style={{ gap: 4 }}>
           {/* Expected (left) */}
           <div style={panelStyle}>
             <div style={{

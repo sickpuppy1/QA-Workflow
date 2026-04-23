@@ -231,6 +231,16 @@ export default function ContactPage() {
           background: radial-gradient(circle, rgba(6,182,212,0.06) 0%, transparent 70%);
           pointer-events: none;
         }
+
+        @media (max-width: 600px) {
+          .container { padding: 40px 16px; }
+          .hero-title { font-size: clamp(28px, 8vw, 42px); }
+          .hero-sub { font-size: 15px; margin-bottom: 32px; }
+          .form-card { padding: 24px; border-radius: 20px; }
+          .info-card { padding: 16px; gap: 12px; }
+          .icon-wrap { width: 40px; height: 40px; }
+          .info-value { font-size: 14px; }
+        }
       `}</style>
 
       <div className="glow-v" />

@@ -35,6 +35,8 @@ body {
   min-height: 100vh;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  width: 100%;
 }
 
 a {
@@ -153,23 +155,7 @@ a {
   overflow: auto;
 }
 
-@media (max-width: 900px) {
-  .app-shell {
-    flex-direction: column;
-  }
 
-  .sidebar {
-    width: 100%;
-    min-width: 0;
-    max-width: none;
-    height: auto;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    position: static;
-    resize: none;
-    overflow: visible;
-  }
-}
 
 .page-header {
   padding: 32px 32px 0;
@@ -208,6 +194,12 @@ a {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 16px;
+}
+
+@media (max-width: 450px) {
+  .card-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Workflow card */
@@ -623,6 +615,12 @@ select.input {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
+}
+
+@media (max-width: 900px) {
+  .compare-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .compare-panel {
@@ -1216,4 +1214,77 @@ ul.jsondiffpatch-textdiff {
   color: white;
   font-weight: bold;
   padding: 2px 4px;
+}
+
+/* --- Responsive Layout Overrides --- */
+@media (max-width: 900px) {
+  .app-shell {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    position: static;
+    resize: none;
+    overflow: visible;
+    padding: 16px;
+  }
+
+  .main {
+    overflow: visible;
+  }
+
+  .page-header {
+    padding: 24px 20px 0;
+  }
+
+  .content {
+    padding: 0 20px 20px;
+  }
+
+  .stats-row {
+    grid-template-columns: 1fr 1fr !important;
+  }
+  
+  .compare-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 500px) {
+  .page-title {
+    font-size: 22px;
+  }
+
+  .stats-row {
+    grid-template-columns: 1fr !important;
+  }
+
+  .page-header {
+    padding: 20px 16px 0;
+  }
+
+  .content {
+    padding: 0 16px 16px;
+  }
+  
+  .login-card {
+    padding: 24px;
+    border-radius: 12px;
+  }
+  
+  .back-to-landing {
+    top: 16px;
+    left: 16px;
+    font-size: 13px;
+  }
+  
+  .card-grid {
+    grid-template-columns: 1fr !important;
+  }
 }

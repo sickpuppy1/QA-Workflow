@@ -415,11 +415,40 @@ export default function LandingPage() {
 
         /* ── Fade-up animation ── */
         @keyframes fadeUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
-        .fade-up { animation: fadeUp 0.7s ease both; }
-        .delay-1 { animation-delay: 0.1s; }
-        .delay-2 { animation-delay: 0.2s; }
-        .delay-3 { animation-delay: 0.3s; }
         .delay-4 { animation-delay: 0.4s; }
+
+        /* ── Responsiveness Hacks ── */
+        @media (max-width: 900px) {
+          .section { padding: 80px 20px; }
+          .hero-wrap { padding-top: 100px; }
+          .sync-grid { grid-template-columns: 1fr; gap: 40px; }
+          .cp-grid { grid-template-columns: repeat(2, 1fr); }
+          .maestro-nav {
+            top: 10px;
+            width: calc(100% - 20px);
+            border-radius: 12px;
+            overflow-x: auto;
+            justify-content: flex-start;
+          }
+        }
+
+        @media (max-width: 600px) {
+          .hero-title { font-size: clamp(28px, 9vw, 38px); letter-spacing: -1.5px; }
+          .hero-sub { font-size: 15px; margin-bottom: 24px; padding: 0 10px; }
+          .hud-container { grid-template-columns: 1fr !important; gap: 8px !important; }
+          .cp-detail { grid-template-columns: 1fr !important; padding: 16px; }
+          .persona-grid { grid-template-columns: 1fr !important; }
+          .mnav-logo { display: none; }
+          .hero-eyebrow { flex-direction: column; gap: 8px; font-size: 10px; margin-bottom: 12px; }
+          .maestro-nav { display: none; } /* Hide on mobile to prioritize title space */
+        }
+
+        @media (max-width: 450px) {
+          .hero-title { font-size: 28px; letter-spacing: -1px; }
+          .cp-grid { grid-template-columns: 1fr; }
+          .hero-actions { flex-direction: column; width: 100%; padding: 0 20px; }
+          .btn-primary, .btn-ghost { width: 100%; justify-content: center; }
+        }
       `}</style>
 
       <div className="lp" ref={containerRef}>

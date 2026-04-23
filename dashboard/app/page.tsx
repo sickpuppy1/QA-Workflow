@@ -11,7 +11,7 @@ import HomeClient from './HomeClient'
 /** Server page: requires session, loads workflows and aggregate stats for `HomeClient`. */
 export default async function HomePage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
   const session = await getSession()
-  if (!session) redirect('/login')
+  if (!session) redirect('/landing')
 
   const parsedParams = await searchParams
   const pageSize = 30

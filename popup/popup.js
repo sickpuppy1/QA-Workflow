@@ -6,12 +6,13 @@ import { DASHBOARD_URL } from "../shared/dashboard-config.js";
  */
 
 const DASHBOARD_AUTH_STORAGE_KEYS = ['dashboardAuthToken', 'dashboardAuthUserId', 'dashboardAuthEmail'];
-const USER_SETTINGS_STORAGE_KEYS = ['playBufferSeconds', 'promptScreenshotLabel', 'networkMergeWindowMs', 'dynamicBindingEnabled'];
+const USER_SETTINGS_STORAGE_KEYS = ['playBufferSeconds', 'promptScreenshotLabel', 'networkMergeWindowMs', 'dynamicBindingEnabled', 'redactSensitiveData'];
 const DEFAULT_USER_SETTINGS = {
   playBufferSeconds: 8,
   promptScreenshotLabel: false,
   networkMergeWindowMs: 500,
   dynamicBindingEnabled: false,
+  redactSensitiveData: true,
 };
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
@@ -33,6 +34,7 @@ const btnPlay           = document.getElementById("btnPlay");
 const playBufferSeconds = document.getElementById("playBufferSeconds");
 const networkMergeWindowMs = document.getElementById("networkMergeWindowMs");
 const promptScreenshotLabelToggle = document.getElementById("promptScreenshotLabelToggle");
+const redactSensitiveDataToggle = document.getElementById("redactSensitiveDataToggle");
 const authSignedOut     = document.getElementById("authSignedOut");
 const authSignedIn      = document.getElementById("authSignedIn");
 const authTabSignin     = document.getElementById("authTabSignin");
@@ -95,6 +97,12 @@ const btnDynamicResume  = document.getElementById("btnDynamicResume");
 // Toast
 const toast             = document.getElementById("toast");
 
+// Site status bar
+const siteStatusBar     = document.getElementById("siteStatusBar");
+const siteStatusDot     = document.getElementById("siteStatusDot");
+const siteStatusText    = document.getElementById("siteStatusText");
+const siteStatusBtn     = document.getElementById("siteStatusBtn");
+
 // ─── Local state ──────────────────────────────────────────────────────────────
 
 let recordingStartTime  = 0;
@@ -113,7 +121,6 @@ let workflowQueue       = [];     // array of parsed workflow JSONs to play sequ
 let playScreenshots     = {};     // currently playing workflow's screenshots
 let playDynamicState    = null;   // live dynamic playback state pushed from SW
 
-const WORKFLOW_PERMISSION_ORIGINS = ['<all_urls>'];
 
 function renderCheckpointLabelMode() {
   btnCheckpoint.title = promptScreenshotLabelToggle.checked
@@ -147,12 +154,81 @@ async function init() {
 }
 
 async function boot() {
+  await refreshSiteStatus();   // check permission first — fast async read
   await initUserSettings();
   await init();
   await initAuthState();
 }
 
 boot();
+
+// ─── Site permission status ───────────────────────────────────────────────────
+
+/**
+ * Checks whether the extension already has host permission for the current tab
+ * and updates the slim status bar below the header accordingly.
+ *
+ * States:
+ *   active   — permission granted, pulse-dot + green hostname
+ *   inactive — permission not granted, gray text + "Enable" micro-button
+ *   unsupported — non-http(s) page (chrome://, file://, etc.) — bar hidden
+ */
+async function refreshSiteStatus() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.url || !/^https?:\/\//.test(tab.url)) {
+      // Non-HTTP page: hide the bar entirely (nothing to enable)
+      siteStatusBar.classList.remove('active', 'inactive');
+      siteStatusText.textContent = 'Not available on this page';
+      siteStatusDot.style.display = 'none';
+      siteStatusBtn.classList.add('hidden');
+      return;
+    }
+
+    siteStatusDot.style.display = '';
+    const origin  = new URL(tab.url).origin;
+    const scope   = { origins: [origin + '/*'] };
+    const granted = await chrome.permissions.contains(scope).catch(() => false);
+    const host    = new URL(tab.url).hostname;
+
+    if (granted) {
+      siteStatusBar.classList.add('active');
+      siteStatusBar.classList.remove('inactive');
+      siteStatusText.textContent = `Active on ${host}`;
+      siteStatusBtn.classList.add('hidden');
+    } else {
+      siteStatusBar.classList.add('inactive');
+      siteStatusBar.classList.remove('active');
+      siteStatusText.textContent = `Not enabled on ${host}`;
+      siteStatusBtn.classList.remove('hidden');
+    }
+  } catch (_) {
+    siteStatusText.textContent = 'Permission status unknown';
+    siteStatusBtn.classList.add('hidden');
+  }
+}
+
+// "Enable" micro-button: requests per-origin permission and re-evaluates
+siteStatusBtn.addEventListener('click', async () => {
+  siteStatusBtn.disabled = true;
+  siteStatusBtn.textContent = '…';
+
+  const granted = await ensureWorkflowSiteAccess(
+    'Grant site access to enable QA logging on this page.'
+  );
+
+  if (granted) {
+    // Permission alone doesn't inject scripts — explicitly request injection
+    // so console/network logs start flowing immediately without needing to record.
+    siteStatusBtn.textContent = 'Activating…';
+    await sendToSW({ type: "INJECT_CONTENT_SCRIPTS" });
+    await refreshSiteStatus();
+    showToast("Enabled! Reload page to capture network history.", "success");
+  }
+
+  siteStatusBtn.disabled = false;
+  siteStatusBtn.textContent = 'Enable';
+});
 
 // ─── Panel switching ──────────────────────────────────────────────────────────
 
@@ -207,6 +283,7 @@ function normalizeUserSettings(input = {}) {
     promptScreenshotLabel: Boolean(input.promptScreenshotLabel),
     networkMergeWindowMs: normalizeNetworkMergeWindowMs(input.networkMergeWindowMs),
     dynamicBindingEnabled: Boolean(input.dynamicBindingEnabled),
+    redactSensitiveData: input.redactSensitiveData === undefined ? true : Boolean(input.redactSensitiveData),
   };
 }
 
@@ -222,6 +299,7 @@ function applyUserSettings(nextSettings = {}) {
   playBufferSeconds.value = String(userSettings.playBufferSeconds);
   networkMergeWindowMs.value = String(userSettings.networkMergeWindowMs);
   promptScreenshotLabelToggle.checked = userSettings.promptScreenshotLabel;
+  redactSensitiveDataToggle.checked = userSettings.redactSensitiveData;
   renderCheckpointLabelMode();
   renderQueue();
   renderDynamicLivePanel();
@@ -235,6 +313,7 @@ async function persistUserSettingsLocally(nextSettings = {}) {
     promptScreenshotLabel: resolvedSettings.promptScreenshotLabel,
     networkMergeWindowMs: resolvedSettings.networkMergeWindowMs,
     dynamicBindingEnabled: resolvedSettings.dynamicBindingEnabled,
+    redactSensitiveData: resolvedSettings.redactSensitiveData,
   });
   return resolvedSettings;
 }
@@ -301,9 +380,16 @@ async function handleNetworkMergeWindowSettingsChange() {
   });
 }
 
+async function handleRedactSensitiveDataSettingChange() {
+  await saveUserSettings({
+    redactSensitiveData: redactSensitiveDataToggle.checked,
+  });
+}
+
 playBufferSeconds.addEventListener('change', handlePlayBufferSettingsChange);
 promptScreenshotLabelToggle.addEventListener('change', handlePromptScreenshotSettingChange);
 networkMergeWindowMs.addEventListener('change', handleNetworkMergeWindowSettingsChange);
+redactSensitiveDataToggle.addEventListener('change', handleRedactSensitiveDataSettingChange);
 
 function setAuthMode(mode) {
   authMode = mode;
@@ -571,11 +657,26 @@ function setupPasswordToggle(input, btn) {
 }
 
 async function ensureWorkflowSiteAccess(deniedMessage) {
-  const scope = { origins: WORKFLOW_PERMISSION_ORIGINS };
-  const alreadyGranted = await chrome.permissions.contains(scope);
+  // Resolve the origin of the currently active tab so we request only
+  // per-site permission (optional_host_permissions) instead of <all_urls>.
+  let origin = null;
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (activeTab?.url && /^https?:\/\//.test(activeTab.url)) {
+      origin = new URL(activeTab.url).origin + "/*";
+    }
+  } catch (_) {}
+
+  if (!origin) {
+    showToast("Cannot request permission: not an http(s) page.", "error");
+    return false;
+  }
+
+  const scope = { origins: [origin] };
+  const alreadyGranted = await chrome.permissions.contains(scope).catch(() => false);
   if (alreadyGranted) return true;
 
-  const granted = await chrome.permissions.request(scope);
+  const granted = await chrome.permissions.request(scope).catch(() => false);
   if (!granted) {
     showToast(deniedMessage, "error");
   }

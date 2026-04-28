@@ -16,6 +16,7 @@ interface UserSettingsDoc {
   promptScreenshotLabel: boolean
   networkMergeWindowMs: number
   dynamicBindingEnabled: boolean
+  redactSensitiveData: boolean
   createdAt: Date
   updatedAt: Date
 }
@@ -106,6 +107,7 @@ export interface UserSettingsRecord {
   promptScreenshotLabel: boolean
   networkMergeWindowMs: number
   dynamicBindingEnabled: boolean
+  redactSensitiveData: boolean
 }
 
 export interface WorkflowSummary {
@@ -219,6 +221,7 @@ export const DEFAULT_USER_SETTINGS: UserSettingsRecord = {
   promptScreenshotLabel: false,
   networkMergeWindowMs: 500,
   dynamicBindingEnabled: false,
+  redactSensitiveData: true,
 }
 
 function iso(value: Date) {
@@ -365,6 +368,7 @@ function mapUserSettings(doc: UserSettingsDoc | null | undefined): UserSettingsR
     promptScreenshotLabel: Boolean(doc.promptScreenshotLabel),
     networkMergeWindowMs: normalizeNetworkMergeWindowMs(doc.networkMergeWindowMs),
     dynamicBindingEnabled: Boolean(doc.dynamicBindingEnabled),
+    redactSensitiveData: doc.redactSensitiveData === undefined ? true : Boolean(doc.redactSensitiveData),
   }
 }
 
@@ -465,6 +469,10 @@ export async function upsertUserSettings(
       input.dynamicBindingEnabled === undefined
         ? current.dynamicBindingEnabled
         : Boolean(input.dynamicBindingEnabled),
+    redactSensitiveData:
+      input.redactSensitiveData === undefined
+        ? current.redactSensitiveData
+        : Boolean(input.redactSensitiveData),
   }
   const now = new Date()
 
@@ -476,6 +484,7 @@ export async function upsertUserSettings(
         promptScreenshotLabel: nextSettings.promptScreenshotLabel,
         networkMergeWindowMs: nextSettings.networkMergeWindowMs,
         dynamicBindingEnabled: nextSettings.dynamicBindingEnabled,
+        redactSensitiveData: nextSettings.redactSensitiveData,
         updatedAt: now,
       },
       $setOnInsert: {

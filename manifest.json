@@ -9,11 +9,13 @@
     "scripting",
     "storage",
     "downloads",
-    "webNavigation",
-    "webRequest"
+    "webNavigation"
   ],
-  "host_permissions": [
-    "<all_urls>"
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*",
+    "http://*:*/*",
+    "https://*:*/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
@@ -36,32 +38,7 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "content/recorder.js",
-        "content/player.js",
-        "content/logs-dialog.js"
-      ],
-      "run_at": "document_idle",
-      "all_frames": false
-    },
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "content/page-interceptor.js",
-        "content/playback-capture.js"
-      ],
-      "run_at": "document_start",
-      "world": "MAIN",
-      "all_frames": true
-    }
-  ],
+
   "web_accessible_resources": [
     {
       "resources": [
@@ -69,7 +46,7 @@
         "content/page-interceptor.js"
       ],
       "matches": [
-        "chrome-extension://*/*"
+        "<all_urls>"
       ]
     }
   ]

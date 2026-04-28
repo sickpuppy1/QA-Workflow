@@ -45,15 +45,15 @@
   }
 
   function pushNet(entry) {
-    console.log('[WF:interceptor] pushNet', {
-      url: entry.url,
-      method: entry.method,
-      status: entry.status,
-      hasReqHeaders: !!(entry.requestHeaders && Object.keys(entry.requestHeaders).length),
-      hasResHeaders: !!(entry.responseHeaders && Object.keys(entry.responseHeaders).length),
-      hasReqBody: entry.requestBody != null,
-      hasResBody: entry.responseBody != null,
-    });
+    // console.log('[WF:interceptor] pushNet', {
+    //   url: entry.url,
+    //   method: entry.method,
+    //   status: entry.status,
+    //   hasReqHeaders: !!(entry.requestHeaders && Object.keys(entry.requestHeaders).length),
+    //   hasResHeaders: !!(entry.responseHeaders && Object.keys(entry.responseHeaders).length),
+    //   hasReqBody: entry.requestBody != null,
+    //   hasResBody: entry.responseBody != null,
+    // });
     // M3: Use same-origin target instead of "*" to prevent eavesdropping.
     window.postMessage({ __wfSrc: "__wf_interceptor__", type: "network_call", ...entry }, window.location.origin || "*");
     // CustomEvent → stays in MAIN world (playback checkpoint watchers)
@@ -84,7 +84,7 @@
         type: "console_snapshot",
         requestId: e.data.requestId,
         items: (window.__wfConsoleLogs || []).slice(),
-      // M3: Target same origin instead of "*" to prevent cross-origin interception.
+        // M3: Target same origin instead of "*" to prevent cross-origin interception.
       }, window.location.origin || "*");
     }
   });
@@ -115,7 +115,7 @@
       } else if (typeof headers === "object") {
         Object.assign(obj, headers);
       }
-    } catch (_) {}
+    } catch (_) { }
     return obj;
   }
 
@@ -147,10 +147,10 @@
 
   const _origFetch = window.fetch;
   window.fetch = function (input, init) {
-    const url    = typeof input === "string" ? input : (input instanceof Request ? input.url : String(input));
+    const url = typeof input === "string" ? input : (input instanceof Request ? input.url : String(input));
     const method = ((init && init.method) || (input instanceof Request && input.method) || "GET").toUpperCase();
     const requestHeaders = headersToObj((init && init.headers) || (input instanceof Request ? input.headers : null));
-    const requestBody    = serializeBody((init && init.body) || null);
+    const requestBody = serializeBody((init && init.body) || null);
     return _origFetch.apply(this, arguments).then((response) => {
 
       const resHeaders = headersToObj(response.headers);
@@ -180,7 +180,7 @@
       // only the first MAX_BODY bytes and immediately cancel the stream.
       try {
         const contentLength = parseInt(response.headers.get("content-length") || "0", 10);
-        const contentType   = (response.headers.get("content-type") || "").toLowerCase();
+        const contentType = (response.headers.get("content-type") || "").toLowerCase();
         // Skip body capture for clearly non-text or very large responses.
         const isBinaryType = /(image|audio|video|font|octet-stream|pdf|zip|gzip|protobuf)/.test(contentType);
         if (!isBinaryType && (contentLength === 0 || contentLength <= MAX_BODY * 4)) {
@@ -197,7 +197,7 @@
                   let offset = 0;
                   for (const c of chunks) { merged.set(c, offset); offset += c.length; }
                   entry.responseBody = new TextDecoder("utf-8", { fatal: false }).decode(merged);
-                } catch (_) {}
+                } catch (_) { }
                 publishUpdatedNet(entry);
                 return;
               }
@@ -208,7 +208,7 @@
               }
               // Collected enough — take only what we need and cancel.
               chunks.push(value.slice(0, MAX_BODY - (totalBytes - value.length)));
-              reader.cancel().catch(() => {});
+              reader.cancel().catch(() => { });
               try {
                 const needed = MAX_BODY;
                 const merged = new Uint8Array(needed);
@@ -220,9 +220,9 @@
                   if (offset >= needed) break;
                 }
                 entry.responseBody = new TextDecoder("utf-8", { fatal: false }).decode(merged);
-              } catch (_) {}
+              } catch (_) { }
               publishUpdatedNet(entry);
-            }).catch(() => { reader.cancel().catch(() => {}); });
+            }).catch(() => { reader.cancel().catch(() => { }); });
             pump();
           } else {
             publishUpdatedNet(entry);
@@ -230,7 +230,7 @@
         } else {
           publishUpdatedNet(entry);
         }
-      } catch (_) {}
+      } catch (_) { }
 
       return response;
     }).catch((err) => {
@@ -241,13 +241,13 @@
 
   // ─── XHR interception ───────────────────────────────────────────────────────
 
-  const _origOpen      = XMLHttpRequest.prototype.open;
-  const _origSend      = XMLHttpRequest.prototype.send;
+  const _origOpen = XMLHttpRequest.prototype.open;
+  const _origSend = XMLHttpRequest.prototype.send;
   const _origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
 
   XMLHttpRequest.prototype.open = function (method, url) {
-    this.__wfMethod  = (method || "GET").toUpperCase();
-    this.__wfUrl     = String(url || "");
+    this.__wfMethod = (method || "GET").toUpperCase();
+    this.__wfUrl = String(url || "");
     this.__wfReqHdrs = {};
     return _origOpen.apply(this, arguments);
   };
@@ -266,12 +266,12 @@
     const requestBody = serializeBody(body);
     const capturedMethod = this.__wfMethod || "GET";
 
-    console.log('[WF:interceptor] XHR.send called', {
-      url: this.__wfUrl || '(not set — open() was pre-injection)',
-      method: capturedMethod,
-      hasBody: requestBody != null,
-      reqHeaders: Object.keys(this.__wfReqHdrs),
-    });
+    // console.log('[WF:interceptor] XHR.send called', {
+    //   url: this.__wfUrl || '(not set — open() was pre-injection)',
+    //   method: capturedMethod,
+    //   hasBody: requestBody != null,
+    //   reqHeaders: Object.keys(this.__wfReqHdrs),
+    // });
 
     this.addEventListener("loadend", () => {
       // Post-hoc URL recovery: responseURL is available after the request completes.
@@ -285,7 +285,7 @@
         } else if (this.responseType === "json" && this.response) {
           responseBody = JSON.stringify(this.response).slice(0, MAX_BODY);
         }
-      } catch (_) {}
+      } catch (_) { }
 
       const responseHeaders = {};
       try {
@@ -293,17 +293,17 @@
           const idx = line.indexOf(":");
           if (idx > 0) responseHeaders[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
         });
-      } catch (_) {}
+      } catch (_) { }
 
-      console.log('[WF:interceptor] XHR loadend', {
-        url: finalUrl,
-        method: capturedMethod,
-        status: this.status,
-        hasReqHeaders: Object.keys(this.__wfReqHdrs || {}).length > 0,
-        hasResHeaders: Object.keys(responseHeaders).length > 0,
-        hasReqBody: requestBody != null,
-        hasResBody: responseBody != null,
-      });
+      // console.log('[WF:interceptor] XHR loadend', {
+      //   url: finalUrl,
+      //   method: capturedMethod,
+      //   status: this.status,
+      //   hasReqHeaders: Object.keys(this.__wfReqHdrs || {}).length > 0,
+      //   hasResHeaders: Object.keys(responseHeaders).length > 0,
+      //   hasReqBody: requestBody != null,
+      //   hasResBody: responseBody != null,
+      // });
 
       pushNet({
         url: finalUrl,

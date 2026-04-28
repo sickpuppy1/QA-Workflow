@@ -25,6 +25,9 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
   const [dynamicBindingEnabled, setDynamicBindingEnabled] = useState(
     initialSettings.dynamicBindingEnabled
   )
+  const [redactSensitiveData, setRedactSensitiveData] = useState(
+    initialSettings.redactSensitiveData
+  )
   const [saving, setSaving] = useState(false)
   const [feedback, setFeedback] = useState<{
     type: 'success' | 'error' | ''
@@ -77,6 +80,7 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
           promptScreenshotLabel,
           networkMergeWindowMs: parsedNetworkMergeWindow,
           dynamicBindingEnabled,
+          redactSensitiveData,
         }),
       })
       const data = await res.json()
@@ -89,6 +93,7 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
       setPromptScreenshotLabel(Boolean(data.settings.promptScreenshotLabel))
       setNetworkMergeWindowMs(String(data.settings.networkMergeWindowMs))
       setDynamicBindingEnabled(Boolean(data.settings.dynamicBindingEnabled))
+      setRedactSensitiveData(Boolean(data.settings.redactSensitiveData))
       setFeedback({
         type: 'success',
         message: 'Settings saved. The extension will use them the next time the popup opens.',
@@ -128,6 +133,19 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
           </svg>
           Settings
         </Link>
+        <Link href="/privacy" className="nav-item">
+          <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+          Privacy Policy
+        </Link>
+        <a href="mailto:support@restroworks.com" className="nav-item">
+          <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+            <polyline points="22,6 12,13 2,6" />
+          </svg>
+          Contact Us
+        </a>
 
         <div style={{ flex: 1 }} />
 
@@ -241,6 +259,25 @@ export default function SettingsClient({ initialSettings, userEmail }: Props) {
                 <span className="settings-toggle-title">Enable dynamic bindings</span>
                 <span className="settings-toggle-desc">
                   When enabled, dynamic input binding tools are shown in popup and workflow details, and playback uses dynamic values.
+                </span>
+              </span>
+            </label>
+
+            <label
+              htmlFor="settings-redact-sensitive-data"
+              className="settings-toggle-card"
+            >
+              <input
+                id="settings-redact-sensitive-data"
+                type="checkbox"
+                checked={redactSensitiveData}
+                onChange={(event) => setRedactSensitiveData(event.target.checked)}
+                className="settings-toggle-checkbox"
+              />
+              <span className="settings-toggle-copy">
+                <span className="settings-toggle-title">Redact sensitive data</span>
+                <span className="settings-toggle-desc">
+                  When enabled, the extension will automatically mask common sensitive patterns (passwords, tokens, API keys) in network bodies and URLs before saving.
                 </span>
               </span>
             </label>

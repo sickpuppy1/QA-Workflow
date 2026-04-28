@@ -65,6 +65,10 @@ export async function PUT(req: NextRequest) {
         body.dynamicBindingEnabled === undefined
           ? undefined
           : Boolean(body.dynamicBindingEnabled),
+      redactSensitiveData:
+        body.redactSensitiveData === undefined
+          ? undefined
+          : Boolean(body.redactSensitiveData),
     })
 
     return NextResponse.json({ settings })

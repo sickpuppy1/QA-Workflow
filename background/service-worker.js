@@ -17,6 +17,7 @@ const DASHBOARD_AUTH_TOKEN_KEY = 'dashboardAuthToken';
 const RECENT_CAPTURE_WINDOW = 200;
 const DEFAULT_NETWORK_MERGE_WINDOW_MS = 500;
 const DEFAULT_DYNAMIC_BINDING_ENABLED = false;
+const DEFAULT_REDACT_SENSITIVE_DATA = true;
 
 // L2: Debug logging flag. Set to `true` during local development to enable
 // verbose diagnostic output. Must remain `false` in production — some diagnostic
@@ -43,6 +44,7 @@ const state = {
   networkClearCutoffs: {},
   networkMergeWindowMs: DEFAULT_NETWORK_MERGE_WINDOW_MS,
   dynamicBindingEnabled: DEFAULT_DYNAMIC_BINDING_ENABLED,
+  redactSensitiveData: DEFAULT_REDACT_SENSITIVE_DATA,
   dialogState: { consoleOpen: false, networkOpen: false },
 
   // Playing
@@ -67,6 +69,10 @@ function normalizeNetworkMergeWindowMs(value) {
 
 function normalizeDynamicBindingEnabled(value) {
   return Boolean(value);
+}
+
+function normalizeRedactSensitiveData(value) {
+  return value === undefined ? DEFAULT_REDACT_SENSITIVE_DATA : Boolean(value);
 }
 
 function isRecord(value) {
@@ -497,6 +503,7 @@ function isSensitiveNetworkKey(key) {
 }
 
 function redactUrlSensitiveParts(rawUrl) {
+  if (!state.redactSensitiveData) return rawUrl ?? null;
   if (typeof rawUrl !== "string" || !rawUrl) return rawUrl ?? null;
   try {
     const parsed = new URL(rawUrl);
@@ -515,6 +522,13 @@ function redactUrlSensitiveParts(rawUrl) {
 
 function sanitizeHeadersForStorage(headers, maxKeys = 24, maxValueLen = 160) {
   const source = headers && typeof headers === "object" ? headers : {};
+  if (!state.redactSensitiveData) {
+    return Object.fromEntries(
+      Object.entries(source)
+        .slice(0, maxKeys)
+        .map(([key, value]) => [key, truncateForStorage(typeof value === "string" ? value : String(value), maxValueLen)])
+    );
+  }
   return Object.fromEntries(
     Object.entries(source)
       .slice(0, maxKeys)
@@ -527,6 +541,7 @@ function sanitizeHeadersForStorage(headers, maxKeys = 24, maxValueLen = 160) {
 
 function sanitizeNetworkBody(value) {
   if (value == null) return null;
+  if (!state.redactSensitiveData) return typeof value === "string" ? value : String(value);
   const text = typeof value === "string" ? value : String(value);
   return `[REDACTED ${text.length} chars]`;
 }
@@ -1029,7 +1044,7 @@ function enqueueRecordingMutation(task) {
 
 (async () => {
   try {
-    const stored = await chrome.storage.local.get(["wfMode", "wfEvents", "wfCheckpoints", "wfRecordingSessionId", "wfScreenshotCount", "networkMergeWindowMs", "dynamicBindingEnabled"]);
+    const stored = await chrome.storage.local.get(["wfMode", "wfEvents", "wfCheckpoints", "wfRecordingSessionId", "wfScreenshotCount", "networkMergeWindowMs", "dynamicBindingEnabled", "redactSensitiveData"]);
     if (stored.wfMode === "recording") {
       state.mode = "recording";
       state.events = stored.wfEvents || [];
@@ -1039,6 +1054,7 @@ function enqueueRecordingMutation(task) {
     }
     state.networkMergeWindowMs = normalizeNetworkMergeWindowMs(stored.networkMergeWindowMs);
     state.dynamicBindingEnabled = normalizeDynamicBindingEnabled(stored.dynamicBindingEnabled);
+    state.redactSensitiveData = normalizeRedactSensitiveData(stored.redactSensitiveData);
   } catch (_) {}
 
   try {
@@ -1102,6 +1118,9 @@ try {
         broadcastDynamicState();
       }
     }
+    if (changes.redactSensitiveData) {
+      state.redactSensitiveData = normalizeRedactSensitiveData(changes.redactSensitiveData.newValue);
+    }
   });
 } catch (_) {}
 
@@ -1123,6 +1142,97 @@ try {
     if (details.reason === 'install') {
       // Welcome page has been removed.
     }
+    ensureDynamicScriptsRegistered();
+  });
+} catch (_) {}
+
+/**
+ * Registers our interceptors to run automatically at document_start.
+ * Because we no longer use static content_scripts in manifest.json (to pass CWS review),
+ * we must register them dynamically here. Chrome will natively sandbox this registration
+ * so it only actually runs on matching origins that the user has explicitly allowed
+ * via optional_host_permissions.
+ */
+async function ensureDynamicScriptsRegistered() {
+  try {
+    const scripts = await chrome.scripting.getRegisteredContentScripts();
+    const hasInterceptors = scripts.some(s => s.id === "qa-interceptor-main");
+    if (!hasInterceptors) {
+      await chrome.scripting.registerContentScripts([
+        {
+          id: "qa-interceptor-main",
+          matches: ["http://*/*", "https://*/*"],
+          js: ["content/page-interceptor.js", "content/playback-capture.js"],
+          runAt: "document_start",
+          world: "MAIN",
+          allFrames: true
+        },
+        {
+          id: "qa-interceptor-isolated",
+          matches: ["http://*/*", "https://*/*"],
+          js: ["content/bridge.js"],
+          runAt: "document_start",
+          world: "ISOLATED",
+          allFrames: true
+        }
+      ]);
+      console.log('[WF:sw] Dynamic content scripts registered successfully.');
+    }
+  } catch (err) {
+    console.warn('[WF:sw] Failed to register dynamic scripts:', err);
+  }
+}
+
+// Ensure registration runs when the SW boots up
+ensureDynamicScriptsRegistered();
+
+// ─── User-triggered injection (action.onClicked fallback) ────────────────────
+
+/**
+ * Requests optional host permission for the clicked tab's origin and injects
+ * QA scripts (interceptors + dialogs) into the page.
+ *
+ * Strategy:
+ * chrome.action.onClicked only fires when there is NO default_popup configured.
+ * When the popup IS active (normal mode), this handler is never invoked — the popup
+ * itself calls ensureWorkflowSiteAccess() before starting recording.
+ * This listener exists as a robust fallback for kiosk/no-popup scenarios.
+ *
+ * Permission model:
+ * Uses optional_host_permissions so Chrome shows a per-origin dialog ("Allow
+ * Workflow Automator to read and change data on example.com?") rather than
+ * demanding all-sites access up front. Only http/https tabs are eligible.
+ */
+try {
+  chrome.action.onClicked.addListener(async (tab) => {
+    if (!tab?.url || !/^https?:\/\//.test(tab.url)) return;
+
+    let origin;
+    try {
+      origin = new URL(tab.url).origin + "/*";
+    } catch (_) {
+      return;
+    }
+
+    // Request per-origin permission (shows Chrome's native dialog)
+    let granted = false;
+    try {
+      granted = await chrome.permissions.request({ origins: [origin] });
+    } catch (_) {}
+    if (!granted) return;
+
+    // Inject QA scripts — uses the same path as normal recording activation
+    await activateTabRecorder(tab.id, "start");
+
+    // Take an initial screenshot checkpoint after injection
+    try {
+      const dataUrl = await captureCleanScreenshot(tab);
+      chrome.tabs.sendMessage(tab.id, {
+        type: "QA_SCREENSHOT_TAKEN",
+        dataUrl,
+        timestamp: Date.now(),
+      }).catch(() => {});
+    } catch (_) {}
   });
 } catch (_) {}
 
@@ -1397,6 +1507,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         dynamicState: dynamicStatePayload(),
       });
       return false;
+
+    case "INJECT_CONTENT_SCRIPTS": {
+      // Called from the popup after the user grants permission for a site via the
+      // Enable button. Injects page-interceptor.js, bridge.js, and logs-dialog.js
+      // so network/console capture starts immediately, even without recording.
+      readyPromise.then(async () => {
+        try {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const tab = tabs[0];
+          if (tab?.id && tab.url && /^https?:\/\//.test(tab.url)) {
+            await activateTabRecorder(tab.id, "start");
+          }
+        } catch (_) {}
+        sendResponse({ ok: true });
+      });
+      return true;
+    }
 
     case "EXPORT_WORKFLOW":
       handleExportWorkflow(sendResponse);
@@ -2039,51 +2166,12 @@ async function activateTabRecorder(tabId, action) {
   return true;
 }
 
-// ─── Network capture via webRequest ──────────────────────────────────────────
-
-/**
- * Stores a captured network call in the worker cache and streams it to the network dialog.
- *
- * Strategy:
- * Called from both onCompleted and onErrorOccurred webRequest listeners. Waits
- * for readyPromise so state.mode is accurate even after a SW restart. Persists to
- * session storage on every write so data survives SW dormancy, and emits
- * NETWORK_CALL_LIVE updates for the network dialog.
- */
-function recordNetworkCall(tabId, call) {
-  readyPromise.then(() => {
-    if (state.mode !== "recording") return;
-    if (!tabId || tabId < 0) return;
-    if (isStaleNetworkEntry(tabId, call)) return;
-    const mergedCall = upsertRecordedNetworkCall(tabId, call);
-    chrome.storage.session.set({ wfNetworkCalls: state.networkCalls }).catch(() => {});
-    chrome.tabs.sendMessage(tabId, { type: "NETWORK_CALL_LIVE", call: mergedCall }).catch(() => {});
-  });
-}
-
-chrome.webRequest.onCompleted.addListener(
-  (details) => {
-    recordNetworkCall(details.tabId, {
-      url: details.url,
-      method: details.method,
-      status: details.statusCode,
-      timestamp: details.timeStamp,
-    });
-  },
-  { urls: ["http://*/*", "https://*/*"] }
-);
-
-chrome.webRequest.onErrorOccurred.addListener(
-  (details) => {
-    recordNetworkCall(details.tabId, {
-      url: details.url,
-      method: details.method,
-      status: 0,
-      timestamp: details.timeStamp,
-    });
-  },
-  { urls: ["http://*/*", "https://*/*"] }
-);
+// ─── Network capture ─────────────────────────────────────────────────────────
+// Network calls are captured exclusively by page-interceptor.js (MAIN world)
+// via fetch/XHR overrides. The intercepted data is forwarded through bridge.js
+// → RECORD_NETWORK_CALL_WITH_BODY message → upsertRecordedNetworkCall().
+// chrome.webRequest is NOT used — it required <all_urls> host_permissions
+// which triggers Chrome Web Store's broad permission review policy.
 
 // ─── Tab switch tracking ──────────────────────────────────────────────────────
 

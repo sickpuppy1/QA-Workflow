@@ -11,7 +11,7 @@ The companion Next.js dashboard for the **Workflow Automator** Chrome extension.
 
 ## Getting Started
 
-Install dependencies (requires Node 21):
+Install dependencies (requires Node 22):
 
 ```bash
 npm install

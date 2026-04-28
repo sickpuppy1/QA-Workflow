@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { motion, useScroll, useTransform, AnimatePresence } from 'framer-motion'
-import { CHROME_EXTENSION_URL } from '@/../shared/dashboard-config'
+import { CHROME_EXTENSION_URL } from '@/lib/site-config'
 import {
   Circle, Play, Pause, BarChart3, CheckCircle2, Zap, Users, Shield,
   Terminal, Wifi, GitBranch, ChevronRight, ArrowRight,

@@ -4,7 +4,7 @@ import { motion } from 'framer-motion'
 import { Mail, MessageSquare, Send, Globe, ChevronLeft, MapPin } from 'lucide-react'
 import Link from 'next/link'
 import { useState } from 'react'
-import { SUPPORT_EMAIL, DISCORD_URL } from '@/../shared/dashboard-config'
+import { SUPPORT_EMAIL, DISCORD_URL } from '@/lib/site-config'
 
 const C = {
   bg0:    'rgba(14,14,20,1)',

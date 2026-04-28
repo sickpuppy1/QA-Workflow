@@ -4,13 +4,11 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": "21.x"
+    "node": "22.x"
   },
   "scripts": {
     "dev": "next dev",
-    "dev21": "$HOME/.nvm/versions/node/v21.7.3/bin/node ./node_modules/.bin/next dev",
     "build": "next build",
-    "build21": "$HOME/.nvm/versions/node/v21.7.3/bin/node ./node_modules/.bin/next build",
     "start": "next start",
     "lint": "eslint"
   },

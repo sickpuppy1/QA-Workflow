@@ -3,7 +3,7 @@
 import { motion } from 'framer-motion'
 import { Shield, Lock, Eye, FileText, ChevronLeft } from 'lucide-react'
 import Link from 'next/link'
-import { DASHBOARD_URL } from '@/../shared/dashboard-config'
+import { DASHBOARD_URL } from '@/lib/site-config'
 
 const C = {
   bg0:    'rgba(14,14,20,1)',

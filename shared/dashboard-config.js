@@ -1,4 +1,4 @@
-export const DASHBOARD_URL = "http://localhost:3000";
+export const DASHBOARD_URL = "https://workflow-automator-dashboard.vercel.app";
 export const DASHBOARD_DEV_URL = "http://localhost:3000";
 
 export const DASHBOARD_ALLOWED_ORIGINS = [

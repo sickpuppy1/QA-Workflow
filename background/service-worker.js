@@ -985,8 +985,6 @@ async function hydrateRecordingStateFromStorage() {
       chrome.storage.local.get(["wfEvents", "wfCheckpoints", "wfRecordingSessionId", "wfScreenshotCount"]),
     ]);
 
-    console.log([session,local]);
-
     const snapshot = session.wfRecordingSnapshot || null;
     const localEvents = Array.isArray(local.wfEvents) ? local.wfEvents : [];
     const localCheckpoints = Array.isArray(local.wfCheckpoints) ? local.wfCheckpoints : [];
@@ -1492,7 +1490,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       state.workflowToPlay = null;
       state.dynamicRuntime = null;
       clearDynamicPauseWithResult("aborted");
-      chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
         if (tab) chrome.tabs.sendMessage(tab.id, { type: 'PLAYBACK_HUD_HIDE' }).catch(() => {});
       }).catch(() => {});
       broadcastToPopup({ type: "PLAYBACK_STOPPED" });
@@ -1514,7 +1512,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // so network/console capture starts immediately, even without recording.
       readyPromise.then(async () => {
         try {
-          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
           const tab = tabs[0];
           if (tab?.id && tab.url && /^https?:\/\//.test(tab.url)) {
             await activateTabRecorder(tab.id, "start");
@@ -1809,7 +1807,7 @@ async function handleAddCheckpoint(label, sendResponse) {
     return;
   }
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab) {
     sendResponse({ error: "No active tab" });
     return;
@@ -2046,7 +2044,7 @@ async function deactivateRecorderOnAllTabs() {
  */
 async function broadcastDialogStateToActiveTab() {
   try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tabs[0]) return;
     const tabId = tabs[0].id;
 
@@ -2188,6 +2186,12 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
+
+    // Only record tab_switch events for navigable http(s) pages.
+    // Switching to chrome://, about:blank, or extension pages produces
+    // unplayable URLs — skip both the event and recorder injection.
+    if (!tab?.url || !/^https?:\/\//.test(tab.url)) return;
+
     state.recordingTabId = activeInfo.tabId;
     state.events.push({
       type: "tab_switch",
@@ -2330,7 +2334,7 @@ async function primePlaybackTab(tabId) {
 async function prepareWorkflowLoopIteration(workflow, loopIndex) {
   if (loopIndex === 0) return;
 
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!activeTab?.id) return;
 
   const startUrl = getWorkflowStartUrl(workflow);
@@ -2455,7 +2459,7 @@ async function runPlaybackQueue() {
     clearDynamicPauseWithResult("aborted");
     if (!anyFailed) {
       try {
-        const [finalTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const [finalTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (finalTab) chrome.tabs.sendMessage(finalTab.id, { type: 'PLAYBACK_HUD_HIDE' }).catch(() => {});
       } catch (_) {}
       // Only tell the popup the queue finished cleanly when nothing failed.
@@ -2605,7 +2609,7 @@ async function runSinglePlayback() {
       : `Step ${i + 1}/${events.length}: ${event.type}${event.selector ? " — " + event.selector.slice(0, 40) : ""}`;
 
     try {
-      const [hudTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [hudTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       if (hudTab) {
         if (event.type === "tab_switch") {
           chrome.tabs.sendMessage(hudTab.id, { type: "PLAYBACK_HUD_HIDE" }).catch(() => {});
@@ -2647,7 +2651,7 @@ async function runSinglePlayback() {
       });
 
       try {
-        const [hudTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const [hudTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (hudTab) {
           chrome.tabs.sendMessage(hudTab.id, {
             type: "PLAYBACK_HUD_FAIL",
@@ -2835,7 +2839,7 @@ async function saveRunToDashboard(workflowId, events, checkpointsByIndex, played
  * @param {Object} results - Accumulator for the session's generated metadata (screenshots).
  */
 async function dispatchPlaybackEvent(event, results, meta) {
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
 
   switch (event.type) {
     case "click":
@@ -2881,7 +2885,7 @@ async function dispatchPlaybackEvent(event, results, meta) {
 
     case "checkpoint": {
       await sleep(300);
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       if (tab) {
         try {
           const dataUrl = await captureCleanScreenshot(tab);
@@ -2906,7 +2910,7 @@ async function dispatchPlaybackEvent(event, results, meta) {
     }
 
     case "console_checkpoint": {
-      const [cpTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [cpTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       if (!cpTab) return { ok: true }; // soft-pass if no tab
 
       // Notify HUD we are checking for this log.
@@ -3004,7 +3008,7 @@ async function dispatchPlaybackEvent(event, results, meta) {
     }
 
     case "network_checkpoint": {
-      const [netTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [netTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       if (!netTab) return { ok: true };
 
       // Notify HUD we are checking for this network call.
@@ -3211,10 +3215,53 @@ async function dispatchPlaybackEvent(event, results, meta) {
 async function handlePlaybackTabSwitch(event, meta) {
   if (!event.url) throw new Error("No URL provided for tab_switch");
 
-  const tabs = await chrome.tabs.query({});
-  let targetTabId;
-  const match = tabs.find(t => t.url && t.url.startsWith(event.url.split("?")[0]));
+  // Normalize the target URL so we can do a precise origin+pathname match
+  // rather than a brittle startsWith() that can match unrelated pages.
+  let targetOrigin = "";
+  let targetPathname = "";
+  try {
+    const parsed = new URL(event.url);
+    targetOrigin = parsed.origin;
+    targetPathname = parsed.pathname.replace(/\/+$/, "") || "/";
+  } catch (_) {
+    // Malformed URL — fall through and just open a new tab.
+  }
 
+  // Determine the reference window so we prefer a tab in the same window
+  // the user is working in rather than jumping to an incognito window.
+  let referenceWindowId = null;
+  try {
+    const [refTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    referenceWindowId = refTab?.windowId ?? null;
+  } catch (_) {}
+
+  // Query all tabs and find candidates that match the target URL.
+  // Exclude incognito tabs unless we have no non-incognito match.
+  const allTabs = await chrome.tabs.query({});
+
+  function tabMatchesUrl(t) {
+    if (!t?.url) return false;
+    try {
+      const p = new URL(t.url);
+      const pn = p.pathname.replace(/\/+$/, "") || "/";
+      return p.origin === targetOrigin && pn === targetPathname;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  const candidates = allTabs.filter(tabMatchesUrl);
+
+  // Preference order:
+  //   1. Same window, non-incognito
+  //   2. Any non-incognito window
+  //   3. Any incognito window (last resort)
+  let match =
+    candidates.find(t => t.windowId === referenceWindowId && !t.incognito) ||
+    candidates.find(t => !t.incognito) ||
+    candidates.find(t => t.incognito);
+
+  let targetTabId;
   if (match) {
     await chrome.tabs.update(match.id, { active: true });
     if (match.windowId) {

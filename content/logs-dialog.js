@@ -238,13 +238,6 @@
       "wfCheckpointIntents",
     ]);
 
-    console.log('[WF:buffer] bufferCheckpointIntent', {
-      wfMode: stored.wfMode,
-      wfRecordingSessionId: stored.wfRecordingSessionId,
-      eventType: event?.type,
-      checkpointId: event?.checkpointId,
-    });
-
     if (!stored.wfRecordingSessionId) {
       console.warn('[WF:buffer] REJECTED: no wfRecordingSessionId (wfMode=', stored.wfMode, ')');
       throw new Error("No active recording session");
@@ -261,7 +254,6 @@
     });
 
     await chrome.storage.local.set({ wfCheckpointIntents: nextIntents });
-    console.log('[WF:buffer] buffered checkpoint intent OK, total intents:', nextIntents.length);
   }
 
   function hasNetworkDetailData(item) {
@@ -858,16 +850,6 @@
         const checkpointId = createCheckpointId();
         const autoLabel = label || `Network: ${settledSelected.method || "GET"} ${(settledSelected.url || "").slice(0, 35)}`;
 
-        console.log('[WF:dialog] handleAddCheckpoint network — settledSelected', {
-          url: settledSelected.url,
-          method: settledSelected.method,
-          status: settledSelected.status,
-          hasReqHeaders: !!(settledSelected.requestHeaders && Object.keys(settledSelected.requestHeaders).length),
-          hasResHeaders: !!(settledSelected.responseHeaders && Object.keys(settledSelected.responseHeaders).length),
-          hasReqBody: settledSelected.requestBody != null,
-          hasResBody: settledSelected.responseBody != null,
-        });
-
         const bufferedEvent = {
           type: "network_checkpoint",
           checkpointId,
@@ -883,18 +865,13 @@
           url: window.location.href,
           timestamp: checkpointTimestamp,
         };
-
-        console.log('[WF:dialog] attempting bufferCheckpointIntent for network checkpoint');
         try {
           await bufferCheckpointIntent(bufferedEvent);
           buffered = true;
-          console.log('[WF:dialog] bufferCheckpointIntent network OK');
         } catch (err) {
           bufferError = err;
-          console.warn('[WF:dialog] bufferCheckpointIntent network FAILED:', err?.message);
         }
 
-        console.log('[WF:dialog] sending ADD_NETWORK_CHECKPOINT to SW');
         try {
           result = await chrome.runtime.sendMessage({
             type: "ADD_NETWORK_CHECKPOINT",
@@ -910,15 +887,10 @@
             checkpointId,
             checkpointTimestamp,
           });
-          console.log('[WF:dialog] ADD_NETWORK_CHECKPOINT SW response:', result);
         } catch (err) {
           transportError = err;
-          console.error('[WF:dialog] ADD_NETWORK_CHECKPOINT transport error:', err?.message);
         }
       }
-
-
-      console.log('[WF:dialog] checkpoint result evaluation', { result, buffered, bufferError: bufferError?.message, transportError: transportError?.message });
 
       if (result && result.error) {
         throw new Error(result.error);

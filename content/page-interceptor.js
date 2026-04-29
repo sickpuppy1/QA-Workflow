@@ -125,6 +125,11 @@
   // from triggering another capture if it calls console.* internally.
   let __wfCapturing = false;
 
+  // Prefix used by the extension's own internal debug logs (e.g. '[WF:buffer]').
+  // We deliberately skip re-capturing these so they don't pollute the log panel
+  // or cause re-entrancy cycles with logs-dialog.js console output.
+  const WF_INTERNAL_PREFIX = "[WF:";
+
   const LEVELS = ["log", "warn", "error", "info", "debug"];
   LEVELS.forEach(level => {
     const _orig = console[level];
@@ -134,8 +139,16 @@
       __wfCapturing = true;
       try {
         const message = args.map(a => {
-          try { return typeof a === "string" ? a : JSON.stringify(a); } catch (_) { return String(a); }
+          try {
+            if (typeof a === "string") return a;
+            // Error instances: JSON.stringify produces "{}" — use message+stack instead
+            if (a instanceof Error) return a.message ? a.message + (a.stack ? "\n" + a.stack : "") : String(a);
+            return JSON.stringify(a);
+          } catch (_) { return String(a); }
         }).join(" ");
+        // Skip logs originating from the extension's own internal code so
+        // they don't appear in the captured log panel or trigger re-entrancy.
+        if (message.startsWith(WF_INTERNAL_PREFIX)) return;
         pushLog({ message, level, timestamp: Date.now(), url: location.href });
       } finally {
         __wfCapturing = false;

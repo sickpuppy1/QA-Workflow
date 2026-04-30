@@ -12,8 +12,7 @@
     "webNavigation"
   ],
   "host_permissions": [
-    "https://workflow-automator-dashboard.vercel.app/*",
-    "http://localhost:3000/*"
+    "https://workflow-automator-dashboard.vercel.app/*"
   ],
   "optional_host_permissions": [
     "http://*/*",

@@ -45,15 +45,7 @@
   }
 
   function pushNet(entry) {
-    // console.log('[WF:interceptor] pushNet', {
-    //   url: entry.url,
-    //   method: entry.method,
-    //   status: entry.status,
-    //   hasReqHeaders: !!(entry.requestHeaders && Object.keys(entry.requestHeaders).length),
-    //   hasResHeaders: !!(entry.responseHeaders && Object.keys(entry.responseHeaders).length),
-    //   hasReqBody: entry.requestBody != null,
-    //   hasResBody: entry.responseBody != null,
-    // });
+
     // M3: Use same-origin target instead of "*" to prevent eavesdropping.
     window.postMessage({ __wfSrc: "__wf_interceptor__", type: "network_call", ...entry }, window.location.origin || "*");
     // CustomEvent → stays in MAIN world (playback checkpoint watchers)
@@ -279,12 +271,7 @@
     const requestBody = serializeBody(body);
     const capturedMethod = this.__wfMethod || "GET";
 
-    // console.log('[WF:interceptor] XHR.send called', {
-    //   url: this.__wfUrl || '(not set — open() was pre-injection)',
-    //   method: capturedMethod,
-    //   hasBody: requestBody != null,
-    //   reqHeaders: Object.keys(this.__wfReqHdrs),
-    // });
+
 
     this.addEventListener("loadend", () => {
       // Post-hoc URL recovery: responseURL is available after the request completes.
@@ -308,15 +295,7 @@
         });
       } catch (_) { }
 
-      // console.log('[WF:interceptor] XHR loadend', {
-      //   url: finalUrl,
-      //   method: capturedMethod,
-      //   status: this.status,
-      //   hasReqHeaders: Object.keys(this.__wfReqHdrs || {}).length > 0,
-      //   hasResHeaders: Object.keys(responseHeaders).length > 0,
-      //   hasReqBody: requestBody != null,
-      //   hasResBody: responseBody != null,
-      // });
+
 
       pushNet({
         url: finalUrl,

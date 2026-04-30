@@ -1311,7 +1311,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // and the network dialog always showed blank detail panels.
       readyPromise.then(() => {
         const tid = sender.tab?.id;
-        console.log('[WF:net] RECORD_NETWORK_CALL_WITH_BODY received', {
+        debug('[WF:net] RECORD_NETWORK_CALL_WITH_BODY received', {
           mode: state.mode,
           tabId: tid,
           url: msg.call?.url,
@@ -1324,12 +1324,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (tid) {
           const call = msg.call;
           if (isStaleNetworkEntry(tid, call)) {
-            console.log('[WF:net] entry is stale, discarding', call?.url);
+            debug('[WF:net] entry is stale, discarding', call?.url);
             sendResponse({ ok: true });
             return;
           }
           const mergedCall = upsertRecordedNetworkCall(tid, call);
-          console.log('[WF:net] upserted into state.networkCalls[', tid, ']', {
+          debug('[WF:net] upserted into state.networkCalls[', tid, ']', {
             url: mergedCall?.url,
             hasReqHeaders: !!(mergedCall?.requestHeaders && Object.keys(mergedCall.requestHeaders).length),
             hasResHeaders: !!(mergedCall?.responseHeaders && Object.keys(mergedCall.responseHeaders).length),
@@ -1341,7 +1341,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // Always broadcast the live update so the dialog stays in sync
           chrome.tabs.sendMessage(tid, { type: "NETWORK_CALL_LIVE", call: mergedCall }).catch(() => {});
         } else {
-          console.warn('[WF:net] RECORD_NETWORK_CALL_WITH_BODY: no sender.tab.id — cannot store call', msg.call?.url);
+          debug('[WF:net] RECORD_NETWORK_CALL_WITH_BODY: no sender.tab.id — cannot store call', msg.call?.url);
         }
         sendResponse({ ok: true });
       });
@@ -1862,7 +1862,7 @@ async function resolveCheckpointSourceTab(sourceTab) {
 async function handleAddConsoleCheckpoint(logEntryOrMessage, label, contextBefore, contextAfter, checkpointId, checkpointTimestamp, sendResponse, sourceTab = null) {
   await readyPromise;
 
-  console.log('[WF:checkpoint] handleAddConsoleCheckpoint called', {
+  debug('[WF:checkpoint] handleAddConsoleCheckpoint called', {
     mode: state.mode,
     sessionId: state.recordingSessionId,
     label,
@@ -1870,14 +1870,14 @@ async function handleAddConsoleCheckpoint(logEntryOrMessage, label, contextBefor
   });
 
   if (!state.recordingSessionId) {
-    console.warn('[WF:checkpoint] REJECTED: no recordingSessionId (mode=', state.mode, ')');
+    debug('[WF:checkpoint] REJECTED: no recordingSessionId (mode=', state.mode, ')');
     sendResponse({ error: "No active recording session" });
     return;
   }
 
   const tab = await resolveCheckpointSourceTab(sourceTab);
   if (!tab) {
-    console.warn('[WF:checkpoint] REJECTED: no active tab');
+    debug('[WF:checkpoint] REJECTED: no active tab');
     sendResponse({ error: "No active tab" });
     return;
   }
@@ -1902,9 +1902,9 @@ async function handleAddConsoleCheckpoint(logEntryOrMessage, label, contextBefor
       timestamp: checkpointTimestamp || Date.now(),
     };
 
-    console.log('[WF:checkpoint] appending console checkpoint', { checkpointId: checkpointEvent.checkpointId, label: autoLabel });
+    debug('[WF:checkpoint] appending console checkpoint', { checkpointId: checkpointEvent.checkpointId, label: autoLabel });
     await appendCheckpointToRecordingState(checkpointEvent);
-    console.log('[WF:checkpoint] console checkpoint saved OK', checkpointEvent.checkpointId);
+    debug('[WF:checkpoint] console checkpoint saved OK', checkpointEvent.checkpointId);
 
     broadcastToPopup({ type: "CONSOLE_CHECKPOINT_ADDED", label: autoLabel });
     sendResponse({ ok: true, label: autoLabel, checkpointId: checkpointEvent.checkpointId });
@@ -1931,7 +1931,7 @@ async function handleAddConsoleCheckpoint(logEntryOrMessage, label, contextBefor
 async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStatus, networkStatusText, networkRequestHeaders, networkResponseHeaders, networkRequestBody, networkResponseBody, label, checkpointId, checkpointTimestamp, sendResponse, sourceTab = null) {
   await readyPromise;
 
-  console.log('[WF:checkpoint] handleAddNetworkCheckpoint called', {
+  debug('[WF:checkpoint] handleAddNetworkCheckpoint called', {
     mode: state.mode,
     sessionId: state.recordingSessionId,
     networkUrl,
@@ -1946,14 +1946,14 @@ async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStat
   });
 
   if (!state.recordingSessionId) {
-    console.warn('[WF:checkpoint] REJECTED: no recordingSessionId (mode=', state.mode, ')');
+    debug('[WF:checkpoint] REJECTED: no recordingSessionId (mode=', state.mode, ')');
     sendResponse({ error: "No active recording session" });
     return;
   }
 
   const tab = await resolveCheckpointSourceTab(sourceTab);
   if (!tab) {
-    console.warn('[WF:checkpoint] REJECTED: no active tab');
+    debug('[WF:checkpoint] REJECTED: no active tab');
     sendResponse({ error: "No active tab" });
     return;
   }
@@ -1968,7 +1968,7 @@ async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStat
       statusText: networkStatusText,
     });
 
-    console.log('[WF:checkpoint] sanitizedCall', {
+    debug('[WF:checkpoint] sanitizedCall', {
       url: sanitizedCall.url,
       hasReqHeaders: !!(sanitizedCall.requestHeaders && Object.keys(sanitizedCall.requestHeaders).length),
       hasResHeaders: !!(sanitizedCall.responseHeaders && Object.keys(sanitizedCall.responseHeaders).length),
@@ -1993,9 +1993,9 @@ async function handleAddNetworkCheckpoint(networkUrl, networkMethod, networkStat
       timestamp: checkpointTimestamp || Date.now(),
     };
 
-    console.log('[WF:checkpoint] appending network checkpoint', { checkpointId: checkpointEvent.checkpointId, label: autoLabel });
+    debug('[WF:checkpoint] appending network checkpoint', { checkpointId: checkpointEvent.checkpointId, label: autoLabel });
     await appendCheckpointToRecordingState(checkpointEvent);
-    console.log('[WF:checkpoint] network checkpoint saved OK', checkpointEvent.checkpointId);
+    debug('[WF:checkpoint] network checkpoint saved OK', checkpointEvent.checkpointId);
 
     broadcastToPopup({ type: "NETWORK_CHECKPOINT_ADDED", label: autoLabel });
     sendResponse({ ok: true, label: autoLabel, checkpointId: checkpointEvent.checkpointId });
@@ -2022,7 +2022,7 @@ async function activateRecorderOnAllTabs() {
   );
   results.forEach((r, i) => {
     if (r.status === "rejected") {
-      console.warn("[WorkflowRec] Could not activate tab", tabs[i]?.id, r.reason?.message);
+      debug("[WorkflowRec] Could not activate tab", tabs[i]?.id, r.reason?.message);
     }
   });
 }
@@ -2065,9 +2065,9 @@ async function broadcastDialogStateToActiveTab() {
           files: ["content/bridge.js"],
           world: "ISOLATED",
         });
-        console.log('[WF:sw] interceptor and bridge injected into MAIN/ISOLATED world for tabId', tabId);
+        debug('[WF:sw] interceptor and bridge injected into MAIN/ISOLATED world for tabId', tabId);
       } catch (err) {
-        console.warn('[WF:sw] Failed to inject page-interceptor.js/bridge.js into tabId', tabId, err?.message);
+        debug('[WF:sw] Failed to inject page-interceptor.js/bridge.js into tabId', tabId, err?.message);
       }
     }
 
@@ -2319,7 +2319,7 @@ async function primePlaybackTab(tabId) {
       files: ["content/player.js"]
     });
   } catch (e) {
-    console.warn("Could not inject player.js for loop iteration:", e);
+    debug("Could not inject player.js for loop iteration:", e);
   }
 
   try {
@@ -2633,7 +2633,7 @@ async function runSinglePlayback() {
       });
     } catch (err) {
       dispatchResult = { ok: false, reason: "exception" };
-      console.warn("Error dispatching playback event:", event.type, err);
+      debug("Error dispatching playback event:", event.type, err);
     }
 
     if (!dispatchResult.ok) {
@@ -2689,7 +2689,7 @@ async function runSinglePlayback() {
       playedAt,
       runStatus,
       failedStep,
-    ).catch(e => console.warn("[WFRec] Playback run save failed:", e));
+    ).catch(e => debug("[WFRec] Playback run save failed:", e));
   }
 
   return runStatus;
@@ -3294,7 +3294,7 @@ async function handlePlaybackTabSwitch(event, meta) {
       }).catch(() => {});
     }
   } catch (e) {
-    console.warn("Could not inject player.js after tab switch:", e);
+    debug("Could not inject player.js after tab switch:", e);
   }
 
   // Re-inject the capture accumulator into MAIN world so it continues buffering
